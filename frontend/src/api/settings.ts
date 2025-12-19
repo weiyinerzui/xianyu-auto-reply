@@ -55,14 +55,32 @@ export const updateAISettings = (data: Record<string, unknown>): Promise<ApiResp
 }
 
 // 测试 AI 连接 - 需要指定 cookie_id
-export const testAIConnection = async (cookieId?: string): Promise<ApiResponse> => {
+export const testAIConnection = async (
+  cookieId?: string,
+  settings?: { ai_api_key?: string; ai_api_url?: string; ai_model?: string }
+): Promise<ApiResponse> => {
   if (!cookieId) {
     return { success: false, message: '请先选择一个账号进行测试' }
   }
   try {
-    const result = await post<{ success?: boolean; message?: string; reply?: string }>(`/ai-reply-test/${cookieId}`, {
+    // 构建请求体
+    const requestBody: Record<string, unknown> = {
       message: '你好，这是一条测试消息',
-    })
+    }
+
+    // 🔧 如果提供了 settings，添加到请求体中作为临时配置
+    if (settings && settings.ai_api_key && settings.ai_api_url && settings.ai_model) {
+      requestBody.test_settings = {
+        api_key: settings.ai_api_key,
+        base_url: settings.ai_api_url,
+        model_name: settings.ai_model,
+      }
+    }
+
+    const result = await post<{ success?: boolean; message?: string; reply?: string }>(
+      `/ai-reply-test/${cookieId}`,
+      requestBody
+    )
     if (result.reply) {
       return { success: true, message: `AI 回复: ${result.reply}` }
     }

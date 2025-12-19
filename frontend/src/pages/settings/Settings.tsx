@@ -14,19 +14,19 @@ export function Settings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [settings, setSettings] = useState<SystemSettings | null>(null)
-  
+
   // 密码修改状态
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [changingPassword, setChangingPassword] = useState(false)
-  
+
   // 备份管理状态
   const [uploadingBackup, setUploadingBackup] = useState(false)
   const [reloadingCache, setReloadingCache] = useState(false)
   const backupFileRef = useRef<HTMLInputElement>(null)
   const userBackupFileRef = useRef<HTMLInputElement>(null)
-  
+
   // AI 测试账号选择
   const [accounts, setAccounts] = useState<Account[]>([])
   const [testAccountId, setTestAccountId] = useState('')
@@ -98,7 +98,12 @@ export function Settings() {
     }
     setTestingAI(true)
     try {
-      const result = await testAIConnection(testAccountId)
+      // 🔧 传递当前表单中的 AI 配置作为临时配置测试
+      const result = await testAIConnection(testAccountId, {
+        ai_api_key: settings?.ai_api_key,
+        ai_api_url: settings?.ai_api_url,
+        ai_model: settings?.ai_model,
+      })
       if (result.success) {
         addToast({ type: 'success', message: result.message || 'AI 连接测试成功' })
       } else {
@@ -359,8 +364,8 @@ export function Settings() {
                     placeholder="选择账号"
                   />
                 </div>
-                <button 
-                  onClick={handleTestAI} 
+                <button
+                  onClick={handleTestAI}
                   className="btn-ios-secondary"
                   disabled={testingAI || !testAccountId}
                 >

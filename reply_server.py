@@ -358,9 +358,20 @@ async def log_requests(request, call_next):
 
 # 提供前端静态文件
 import os
+
+# 优先使用 frontend/dist（Vite 构建输出），如果不存在则使用 static
+frontend_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir, exist_ok=True)
+
+# 检查 frontend/dist 是否存在（React + Vite 构建输出）
+if os.path.exists(frontend_dist_dir):
+    static_dir = frontend_dist_dir
+    logger.info(f"✅ 使用前端构建目录: {frontend_dist_dir}")
+else:
+    # 回退到 static 目录
+    if not os.path.exists(static_dir):
+        os.makedirs(static_dir, exist_ok=True)
+    logger.warning(f"⚠️ frontend/dist 不存在，使用 static 目录: {static_dir}")
 
 app.mount('/static', StaticFiles(directory=static_dir), name='static')
 
@@ -4335,7 +4346,19 @@ def get_all_ai_reply_settings(current_user: Dict[str, Any] = Depends(get_current
 
 @app.post("/ai-reply-test/{cookie_id}")
 def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_auth)):
-    """测试AI回复功能"""
+    """测试AI回复功能
+    
+    test_data 可包含：
+    - message: 测试消息（可选，默认'你好'）
+    - item_title/price/desc: 测试商品信息（可选）
+    - test_settings: 临时配置，用于测试未保存的配置（新增）
+      - api_key: API密钥
+      - base_url: API地址
+      - model_name: 模型名称
+    
+    如果提供了 test_settings，将使用临时配置进行测试（不保存到数据库）
+    否则使用数据库中已保存的配置
+    """
     try:
         # 检查账号是否存在
         if cookie_manager.manager is None:
@@ -4344,40 +4367,120 @@ def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_aut
         if cookie_id not in cookie_manager.manager.cookies:
             raise HTTPException(status_code=404, detail='账号不存在')
 
-        # 检查是否启用AI回复
-        if not ai_reply_engine.is_ai_enabled(cookie_id):
-            raise HTTPException(status_code=400, detail='该账号未启用AI回复')
-
-        # 检查AI设置是否完整
-        settings = db_manager.get_ai_reply_settings(cookie_id)
-        if not settings.get('api_key'):
-            raise HTTPException(status_code=400, detail='未配置API Key，请先在AI设置中配置API Key')
-        if not settings.get('base_url'):
-            raise HTTPException(status_code=400, detail='未配置API地址，请先在AI设置中配置API地址')
-
-        # 构造测试数据
-        test_message = test_data.get('message', '你好')
-        test_item_info = {
-            'title': test_data.get('item_title', '测试商品'),
-            'price': test_data.get('item_price', 100),
-            'desc': test_data.get('item_desc', '这是一个测试商品')
-        }
-
-        # 生成测试回复（跳过等待时间）
-        reply = ai_reply_engine.generate_reply(
-            message=test_message,
-            item_info=test_item_info,
-            chat_id=f"test_{int(time.time())}",
-            cookie_id=cookie_id,
-            user_id="test_user",
-            item_id="test_item",
-            skip_wait=True  # 测试时跳过10秒等待
-        )
-
-        if reply:
-            return {"message": "测试成功", "reply": reply}
+        # 🔧 新增：优先使用前端传递的临时配置
+        if 'test_settings' in test_data and test_data['test_settings']:
+            # 使用临时配置进行测试（不保存到数据库）
+            test_settings = test_data['test_settings']
+            api_key = test_settings.get('api_key', '').strip()
+            base_url = test_settings.get('base_url', '').strip()
+            model_name = test_settings.get('model_name', '').strip()
+            
+            # 验证必填字段
+            if not api_key:
+                raise HTTPException(status_code=400, detail='API Key 不能为空')
+            if not base_url:
+                raise HTTPException(status_code=400, detail='API 地址不能为空')
+            if not model_name:
+                raise HTTPException(status_code=400, detail='模型名称不能为空')
+            
+            logger.info(f"【临时配置测试】cookie_id={cookie_id}, base_url={base_url}, model={model_name}")
+            
+            # 直接创建临时客户端进行测试
+            try:
+                from openai import OpenAI
+                test_client = OpenAI(api_key=api_key, base_url=base_url)
+                
+                # 构造测试消息
+                test_message = test_data.get('message', '你好')
+                
+                logger.info(f"【临时配置测试】开始调用 API: model={model_name}, message={test_message[:20]}...")
+                
+                # 简单测试：直接调用 API
+                response = test_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "你是一个友好的助手"},
+                        {"role": "user", "content": test_message}
+                    ],
+                    max_tokens=50,
+                    temperature=0.7
+                )
+                
+                reply = response.choices[0].message.content.strip()
+                logger.info(f"【临时配置测试】成功，回复: {reply[:50]}...")
+                return {
+                    "success": True,
+                    "message": "测试成功！API 配置正确，连接正常。",
+                    "reply": reply
+                }
+                
+            except Exception as e:
+                logger.error(f"【临时配置测试】失败: {e}")
+                import traceback
+                logger.error(f"详细错误: {traceback.format_exc()}")
+                
+                error_msg = str(e)
+                
+                # 提供更友好的错误提示
+                if "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower() or "api key" in error_msg.lower() or "401" in error_msg:
+                    raise HTTPException(status_code=400, detail="API Key 无效或已过期，请检查 API Key 是否正确")
+                elif "not found" in error_msg.lower() or "404" in error_msg:
+                    raise HTTPException(status_code=400, detail=f"模型 '{model_name}' 不存在，请检查模型名称是否正确")
+                elif "connection" in error_msg.lower() or "network" in error_msg.lower() or "timeout" in error_msg.lower():
+                    raise HTTPException(status_code=400, detail=f"无法连接到 API 地址 '{base_url}'，请检查网络或 URL 是否正确")
+                elif "rate limit" in error_msg.lower() or "429" in error_msg:
+                    raise HTTPException(status_code=400, detail="API 调用频率超限，请稍后再试")
+                elif "quota" in error_msg.lower() or "insufficient" in error_msg.lower():
+                    raise HTTPException(status_code=400, detail="API 额度不足，请检查账户余额")
+                else:
+                    # 返回原始错误信息
+                    raise HTTPException(status_code=400, detail=f"测试失败: {error_msg[:200]}")
+        
         else:
-            raise HTTPException(status_code=400, detail="AI回复生成失败，请检查API Key是否正确、API地址是否可访问")
+            # 使用数据库中已保存的配置（原有逻辑）
+            logger.info(f"【已保存配置测试】cookie_id={cookie_id}")
+            
+            # 检查是否启用AI回复
+            if not ai_reply_engine.is_ai_enabled(cookie_id):
+                raise HTTPException(status_code=400, detail='该账号未启用AI回复，请先在设置中启用')
+
+            # 检查AI设置是否完整
+            settings = db_manager.get_ai_reply_settings(cookie_id)
+            if not settings.get('api_key'):
+                raise HTTPException(status_code=400, detail='未配置API Key，请先在AI设置中配置API Key')
+            if not settings.get('base_url'):
+                raise HTTPException(status_code=400, detail='未配置API地址，请先在AI设置中配置API地址')
+
+            logger.info(f"【已保存配置测试】base_url={settings.get('base_url')}, model={settings.get('model_name')}")
+
+            # 构造测试数据
+            test_message = test_data.get('message', '你好')
+            test_item_info = {
+                'title': test_data.get('item_title', '测试商品'),
+                'price': test_data.get('item_price', 100),
+                'desc': test_data.get('item_desc', '这是一个测试商品')
+            }
+
+            # 生成测试回复（跳过等待时间）
+            reply = ai_reply_engine.generate_reply(
+                message=test_message,
+                item_info=test_item_info,
+                chat_id=f"test_{int(time.time())}",
+                cookie_id=cookie_id,
+                user_id="test_user",
+                item_id="test_item",
+                skip_wait=True  # 测试时跳过10秒等待
+            )
+
+            if reply:
+                logger.info(f"【已保存配置测试】成功，回复: {reply[:50]}...")
+                return {
+                    "success": True,
+                    "message": "测试成功！",
+                    "reply": reply
+                }
+            else:
+                raise HTTPException(status_code=400, detail="AI回复生成失败，请检查API Key是否正确、API地址是否可访问")
 
     except HTTPException:
         raise
@@ -4386,6 +4489,7 @@ def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_aut
         import traceback
         logger.error(f"详细错误: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
+
 
 
 # ==================== 日志管理API ====================
