@@ -5,9 +5,9 @@ import type { Account, AccountDetail, ApiResponse } from '@/types'
 export const getAccounts = async (): Promise<Account[]> => {
   const ids: string[] = await get('/cookies')
   // 后端返回的是账号ID数组，转换为Account对象数组
-  return ids.map(id => ({ 
-    id, 
-    cookie: '', 
+  return ids.map(id => ({
+    id,
+    cookie: '',
     enabled: true,
     use_ai_reply: false,
     use_default_reply: false,
@@ -151,17 +151,26 @@ export const getAIReplySettings = (cookieId: string): Promise<AIReplySettings> =
 
 // 更新AI回复设置
 export const updateAIReplySettings = (cookieId: string, settings: Partial<AIReplySettings>): Promise<ApiResponse> => {
-  // 转换字段名以匹配后端
+  // 只发送明确提供的字段，避免用默认值覆盖数据库中的NULL（NULL表示使用系统设置）
   const payload: Record<string, unknown> = {
     ai_enabled: settings.ai_enabled ?? settings.enabled ?? false,
-    model_name: settings.model_name ?? 'qwen-plus',
-    api_key: settings.api_key ?? '',
-    base_url: settings.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     max_discount_percent: settings.max_discount_percent ?? 10,
     max_discount_amount: settings.max_discount_amount ?? 100,
     max_bargain_rounds: settings.max_bargain_rounds ?? 3,
     custom_prompts: settings.custom_prompts ?? '',
   }
+
+  // 只有当这些字段被明确设置时才包含在请求中（undefined 表示使用系统设置）
+  if (settings.model_name !== undefined) {
+    payload.model_name = settings.model_name
+  }
+  if (settings.api_key !== undefined) {
+    payload.api_key = settings.api_key
+  }
+  if (settings.base_url !== undefined) {
+    payload.base_url = settings.base_url
+  }
+
   return put(`/ai-reply-settings/${cookieId}`, payload)
 }
 

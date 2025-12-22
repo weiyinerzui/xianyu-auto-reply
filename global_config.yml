@@ -44,8 +44,8 @@ DEFAULT_HEADERS:
   sec-fetch-site: same-site
   user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
     like Gecko) Chrome/133.0.0.0 Safari/537.36
-HEARTBEAT_INTERVAL: 15
-HEARTBEAT_TIMEOUT: 30
+HEARTBEAT_INTERVAL: 30
+HEARTBEAT_TIMEOUT: 60
 LOG_CONFIG:
   compression: zip
   format: '<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level>

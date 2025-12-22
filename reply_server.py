@@ -4521,7 +4521,9 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
             raise HTTPException(status_code=500, detail='CookieManager 未就绪')
 
         # 保存设置
-        settings_dict = settings.dict()
+        # 使用 exclude_unset=True 只包含请求中明确提供的字段
+        # 这样可以防止Pydantic的默认值覆盖数据库中已有的值（例如NULL）
+        settings_dict = settings.dict(exclude_unset=True)
         success = db_manager.save_ai_reply_settings(cookie_id, settings_dict)
 
         if success:

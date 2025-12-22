@@ -1768,27 +1768,82 @@ class DBManager:
 
     # -------------------- AI回复设置操作 --------------------
     def save_ai_reply_settings(self, cookie_id: str, settings: dict) -> bool:
-        """保存AI回复设置"""
+        """保存AI回复设置
+        
+        只更新传入的字段，未传入的字段保持原值（包括NULL）。
+        这允许账号级别的 model_name, api_key, base_url 保持为 NULL，
+        从而使系统回退到全局设置。
+        """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('''
-                INSERT OR REPLACE INTO ai_reply_settings
-                (cookie_id, ai_enabled, model_name, api_key, base_url,
-                 max_discount_percent, max_discount_amount, max_bargain_rounds,
-                 custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (
-                    cookie_id,
-                    settings.get('ai_enabled', False),
-                    settings.get('model_name', 'qwen-plus'),
-                    settings.get('api_key', ''),
-                    settings.get('base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
-                    settings.get('max_discount_percent', 10),
-                    settings.get('max_discount_amount', 100),
-                    settings.get('max_bargain_rounds', 3),
-                    settings.get('custom_prompts', '')
-                ))
+                
+                # 首先检查记录是否存在
+                cursor.execute('SELECT 1 FROM ai_reply_settings WHERE cookie_id = ?', (cookie_id,))
+                exists = cursor.fetchone() is not None
+                
+                if exists:
+                    # 记录存在，使用动态UPDATE只更新传入的字段
+                    update_parts = []
+                    values = []
+                    
+                    # 始终更新的字段（如果存在于settings中）
+                    if 'ai_enabled' in settings:
+                        update_parts.append('ai_enabled = ?')
+                        values.append(settings['ai_enabled'])
+                    if 'max_discount_percent' in settings:
+                        update_parts.append('max_discount_percent = ?')
+                        values.append(settings['max_discount_percent'])
+                    if 'max_discount_amount' in settings:
+                        update_parts.append('max_discount_amount = ?')
+                        values.append(settings['max_discount_amount'])
+                    if 'max_bargain_rounds' in settings:
+                        update_parts.append('max_bargain_rounds = ?')
+                        values.append(settings['max_bargain_rounds'])
+                    if 'custom_prompts' in settings:
+                        update_parts.append('custom_prompts = ?')
+                        values.append(settings['custom_prompts'])
+                    
+                    # 可选字段：只有明确传入时才更新（支持设置为NULL或空字符串）
+                    if 'model_name' in settings:
+                        update_parts.append('model_name = ?')
+                        values.append(settings['model_name'] if settings['model_name'] else None)
+                    if 'api_key' in settings:
+                        update_parts.append('api_key = ?')
+                        values.append(settings['api_key'] if settings['api_key'] else None)
+                    if 'base_url' in settings:
+                        update_parts.append('base_url = ?')
+                        values.append(settings['base_url'] if settings['base_url'] else None)
+                    
+                    if not update_parts:
+                        logger.debug(f"AI回复设置没有变更: {cookie_id}")
+                        return True
+                        
+                    update_parts.append('updated_at = CURRENT_TIMESTAMP')
+                    values.append(cookie_id)
+                    
+                    sql = f"UPDATE ai_reply_settings SET {', '.join(update_parts)} WHERE cookie_id = ?"
+                    cursor.execute(sql, values)
+                else:
+                    # 记录不存在，插入新记录
+                    cursor.execute('''
+                    INSERT INTO ai_reply_settings
+                    (cookie_id, ai_enabled, model_name, api_key, base_url,
+                     max_discount_percent, max_discount_amount, max_bargain_rounds,
+                     custom_prompts, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (
+                        cookie_id,
+                        settings.get('ai_enabled', False),
+                        settings.get('model_name') if settings.get('model_name') else None,
+                        settings.get('api_key') if settings.get('api_key') else None,
+                        settings.get('base_url') if settings.get('base_url') else None,
+                        settings.get('max_discount_percent', 10),
+                        settings.get('max_discount_amount', 100),
+                        settings.get('max_bargain_rounds', 3),
+                        settings.get('custom_prompts', '')
+                    ))
+                
                 self.conn.commit()
                 logger.debug(f"AI回复设置保存成功: {cookie_id}")
                 return True
