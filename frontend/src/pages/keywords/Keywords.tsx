@@ -27,7 +27,7 @@ export function Keywords() {
   const [importing, setImporting] = useState(false)
   const [exporting, setExporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
-  
+
   // 图片关键词相关状态
   const [isImageModalOpen, setIsImageModalOpen] = useState(false)
   const [imageKeyword, setImageKeyword] = useState('')
@@ -138,13 +138,14 @@ export function Keywords() {
 
       if (editingKeyword) {
         const result = await updateKeyword(
-          selectedAccount, 
+          selectedAccount,
           editingKeyword.keyword,
           editingKeyword.item_id || '',
           {
             keyword: keywordText.trim(),
             reply: replyText.trim(),
             item_id: itemIdText.trim(),
+            fuzzy_match: fuzzyMatch,  // 传递模糊匹配设置
           }
         )
         if (result.success === false) {
@@ -157,6 +158,7 @@ export function Keywords() {
           keyword: keywordText.trim(),
           reply: replyText.trim(),
           item_id: itemIdText.trim(),
+          fuzzy_match: fuzzyMatch,  // 传递模糊匹配设置
         })
         if (result.success === false) {
           addToast({ type: 'error', message: result.message || '添加失败' })
@@ -394,9 +396,9 @@ export function Keywords() {
                 accounts.length === 0
                   ? [{ value: '', label: '暂无账号' }]
                   : accounts.map((account) => ({
-                      value: account.id,
-                      label: account.id,
-                    }))
+                    value: account.id,
+                    label: account.id,
+                  }))
               }
               placeholder="选择账号"
             />
@@ -597,14 +599,12 @@ export function Keywords() {
                   <button
                     type="button"
                     onClick={() => setFuzzyMatch(!fuzzyMatch)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      fuzzyMatch ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'
-                    }`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${fuzzyMatch ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        fuzzyMatch ? 'translate-x-6' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${fuzzyMatch ? 'translate-x-6' : 'translate-x-1'
+                        }`}
                     />
                   </button>
                 </div>
@@ -668,7 +668,7 @@ export function Keywords() {
                 {/* 图片上传区域 */}
                 <div>
                   <label className="input-label">上传图片 <span className="text-red-500">*</span></label>
-                  <div 
+                  <div
                     className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-lg p-4 text-center hover:border-blue-400 dark:hover:border-blue-500 transition-colors cursor-pointer"
                     onClick={() => imageInputRef.current?.click()}
                   >

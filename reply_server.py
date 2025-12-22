@@ -3055,7 +3055,8 @@ def get_keywords_with_item_id(cid: str, current_user: Dict[str, Any] = Depends(g
             "reply": keyword_data['reply'],
             "item_id": keyword_data['item_id'] or "",
             "type": keyword_data['type'],
-            "image_url": keyword_data['image_url']
+            "image_url": keyword_data['image_url'],
+            "fuzzy_match": bool(keyword_data.get('fuzzy_match', 0))  # 返回fuzzy_match字段
         })
 
     return result
@@ -3106,6 +3107,7 @@ def update_keywords_with_item_id(cid: str, body: KeywordWithItemIdIn, current_us
         keyword = kw_data.get('keyword', '').strip()
         reply = kw_data.get('reply', '').strip()
         item_id = kw_data.get('item_id', '').strip() or None
+        fuzzy_match = kw_data.get('fuzzy_match', False)  # 提取模糊匹配设置
 
         if not keyword:
             raise HTTPException(status_code=400, detail="关键词不能为空")
@@ -3117,7 +3119,7 @@ def update_keywords_with_item_id(cid: str, body: KeywordWithItemIdIn, current_us
             raise HTTPException(status_code=400, detail=f"关键词 '{keyword}' {item_id_text} 在当前提交中重复")
         keyword_set.add(keyword_key)
 
-        keywords_to_save.append((keyword, reply, item_id))
+        keywords_to_save.append((keyword, reply, item_id, fuzzy_match))  # 添加fuzzy_match
 
     # 保存关键词（只保存文本关键词，保留图片关键词）
     try:
@@ -4239,6 +4241,220 @@ class AIReplySettings(BaseModel):
     max_discount_amount: int = 100
     max_bargain_rounds: int = 3
     custom_prompts: str = ""
+
+
+# ==================== 知识库管理 ====================
+# 添加于 2025-12-19
+
+class KnowledgeBaseRequest(BaseModel):
+    knowledge_base: str
+
+
+class BatchImportKBRequest(BaseModel):
+    import_data: dict  # {item_id: knowledge_base_text}
+
+
+# 知识库模板
+KB_TEMPLATES = {
+    "basic": {
+        "name": "基础模板",
+        "content": """【产品介绍】
+产品名称：
+核心功能：
+产品特点：
+
+【使用说明】
+1. 第一步：
+2. 第二步：
+3. 第三步：
+
+【常见问题】
+Q: 
+A: 
+
+Q: 
+A: """
+    },
+    "mobile_service": {
+        "name": "移动套餐模板",
+        "content": """【套餐详情】
+套餐名称：
+月费价格：
+包含内容：
+适用范围：
+
+【开通流程】
+1. 
+2. 
+3. 
+
+【使用说明】
+网络要求：
+设备要求：
+使用方式：
+
+【故障排查】
+问题1：
+解决：
+
+问题2：
+解决：
+
+【退订说明】
+退订方式：
+退款政策："""
+    },
+    "ecommerce": {
+        "name": "电商产品模板",
+        "content": """【商品信息】
+商品名称：
+商品价格：
+商品规格：
+商品特点：
+
+【购买须知】
+发货时间：
+物流说明：
+售后服务：
+
+【使用方法】
+使用场景：
+使用步骤：
+注意事项：
+
+【常见问题】
+Q: 是否支持退换货？
+A: 
+
+Q: 保修多久？
+A: """
+    }
+}
+
+
+@app.get("/items/{cookie_id}/{item_id}/knowledge-base")
+def get_item_knowledge_base(
+    cookie_id: str,
+    item_id: str,
+    _: None = Depends(require_auth)
+):
+    """获取商品知识库"""
+    try:
+        knowledge_base = db_manager.get_item_knowledge_base(cookie_id, item_id)
+        return {
+            "success": True,
+            "knowledge_base": knowledge_base,
+            "length": len(knowledge_base)
+        }
+    except Exception as e:
+        logger.error(f"获取商品知识库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/items/{cookie_id}/{item_id}/knowledge-base")
+def update_item_knowledge_base(
+    cookie_id: str,
+    item_id: str,
+    request: KnowledgeBaseRequest,
+    _: None = Depends(require_auth)
+):
+    """更新商品知识库"""
+    try:
+        # 验证商品存在
+        item = db_manager.get_item_info(cookie_id, item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="商品不存在")
+        
+        # 保存知识库
+        success = db_manager.save_item_knowledge_base(
+            cookie_id, 
+            item_id, 
+            request.knowledge_base
+        )
+        
+        if success:
+            return {
+                "success": True,
+                "message": "知识库保存成功",
+                "length": len(request.knowledge_base)
+            }
+        else:
+            raise HTTPException(status_code=500, detail="保存失败")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新商品知识库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/items/{cookie_id}/{item_id}/knowledge-base")
+def delete_item_knowledge_base(
+    cookie_id: str,
+    item_id: str,
+    _: None = Depends(require_auth)
+):
+    """清空商品知识库"""
+    try:
+        success = db_manager.save_item_knowledge_base(cookie_id, item_id, '')
+        if success:
+            return {"success": True, "message": "知识库已清空"}
+        else:
+            raise HTTPException(status_code=500, detail="清空失败")
+    except Exception as e:
+        logger.error(f"清空商品知识库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge-base/batch-export")
+def batch_export_knowledge_bases(
+    cookie_id: Optional[str] = None,
+    _: None = Depends(require_auth)
+):
+    """批量导出知识库"""
+    try:
+        export_data = db_manager.batch_export_knowledge_bases(cookie_id)
+        return {
+            "success": True,
+            "data": export_data,
+            "count": len(export_data)
+        }
+    except Exception as e:
+        logger.error(f"批量导出知识库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge-base/batch-import")
+def batch_import_knowledge_bases(
+    request: BatchImportKBRequest,
+    cookie_id: str,
+    _: None = Depends(require_auth)
+):
+    """批量导入知识库"""
+    try:
+        success_count, fail_count = db_manager.batch_import_knowledge_bases(
+            request.import_data,
+            cookie_id
+        )
+        
+        return {
+            "success": True,
+            "message": f"导入完成: 成功 {success_count}, 失败 {fail_count}",
+            "success_count": success_count,
+            "fail_count": fail_count
+        }
+    except Exception as e:
+        logger.error(f"批量导入知识库失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge-base/templates")
+def get_knowledge_base_templates(_: None = Depends(require_auth)):
+    """获取知识库模板列表"""
+    return {
+        "success": True,
+        "templates": KB_TEMPLATES
+    }
 
 
 @app.delete("/items/batch")

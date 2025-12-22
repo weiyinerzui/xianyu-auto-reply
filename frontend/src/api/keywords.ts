@@ -8,7 +8,7 @@ export const getKeywords = (cookieId: string): Promise<Keyword[]> => {
 
 // 保存关键词列表（替换整个列表）
 // 后端接口: POST /keywords-with-item-id/{cid}
-// 请求体: { keywords: [{ keyword, reply, item_id }, ...] }
+// 请求体: { keywords: [{ keyword, reply, item_id, fuzzy_match }, ...] }
 export const saveKeywords = (cookieId: string, keywords: Keyword[]): Promise<ApiResponse> => {
   // 只发送文本类型的关键词，图片类型通过单独接口处理
   const textKeywords = keywords
@@ -16,7 +16,8 @@ export const saveKeywords = (cookieId: string, keywords: Keyword[]): Promise<Api
     .map(k => ({
       keyword: k.keyword,
       reply: k.reply || '',
-      item_id: k.item_id || ''
+      item_id: k.item_id || '',
+      fuzzy_match: k.fuzzy_match || false  // 传递模糊匹配设置
     }))
   return post(`/keywords-with-item-id/${cookieId}`, { keywords: textKeywords })
 }
@@ -25,8 +26,8 @@ export const saveKeywords = (cookieId: string, keywords: Keyword[]): Promise<Api
 export const addKeyword = async (cookieId: string, data: Partial<Keyword>): Promise<ApiResponse> => {
   const keywords = await getKeywords(cookieId)
   // 检查是否已存在
-  const exists = keywords.some(k => 
-    k.keyword === data.keyword && 
+  const exists = keywords.some(k =>
+    k.keyword === data.keyword &&
     (k.item_id || '') === (data.item_id || '')
   )
   if (exists) {
@@ -43,14 +44,14 @@ export const addKeyword = async (cookieId: string, data: Partial<Keyword>): Prom
 
 // 更新关键词
 export const updateKeyword = async (
-  cookieId: string, 
-  oldKeyword: string, 
+  cookieId: string,
+  oldKeyword: string,
   oldItemId: string,
   data: Partial<Keyword>
 ): Promise<ApiResponse> => {
   const keywords = await getKeywords(cookieId)
-  const index = keywords.findIndex(k => 
-    k.keyword === oldKeyword && 
+  const index = keywords.findIndex(k =>
+    k.keyword === oldKeyword &&
     (k.item_id || '') === (oldItemId || '')
   )
   if (index === -1) {
@@ -58,9 +59,9 @@ export const updateKeyword = async (
   }
   // 检查新关键词是否与其他关键词重复
   if (data.keyword !== oldKeyword || data.item_id !== oldItemId) {
-    const duplicate = keywords.some((k, i) => 
-      i !== index && 
-      k.keyword === data.keyword && 
+    const duplicate = keywords.some((k, i) =>
+      i !== index &&
+      k.keyword === data.keyword &&
       (k.item_id || '') === (data.item_id || '')
     )
     if (duplicate) {
@@ -73,12 +74,12 @@ export const updateKeyword = async (
 
 // 删除关键词
 export const deleteKeyword = async (
-  cookieId: string, 
-  keyword: string, 
+  cookieId: string,
+  keyword: string,
   itemId: string
 ): Promise<ApiResponse> => {
   const keywords = await getKeywords(cookieId)
-  const filtered = keywords.filter(k => 
+  const filtered = keywords.filter(k =>
     !(k.keyword === keyword && (k.item_id || '') === (itemId || ''))
   )
   if (filtered.length === keywords.length) {
@@ -104,7 +105,11 @@ export const getDefaultReply = (cookieId: string): Promise<{ default_reply: stri
 
 // 更新默认回复
 export const updateDefaultReply = (cookieId: string, defaultReply: string): Promise<ApiResponse> => {
-  return put(`/default-reply/${cookieId}`, { default_reply: defaultReply })
+  return put(`/default-reply/${cookieId}`, {
+    enabled: true,  // 默认启用
+    reply_content: defaultReply,
+    reply_once: false  // 默认每次都回复
+  })
 }
 
 // 导出关键词（Excel/模板），返回 Blob 供前端触发下载

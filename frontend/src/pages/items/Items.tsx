@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
+import { CheckSquare, Download, Edit2, ExternalLink, FileText, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
 import { batchDeleteItems, deleteItem, fetchItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
 import { Select } from '@/components/common/Select'
+import { KnowledgeBaseEditor } from '@/components/KnowledgeBaseEditor'
 import type { Account, Item } from '@/types'
 
 export function Items() {
@@ -24,6 +25,9 @@ export function Items() {
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [editDetail, setEditDetail] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+
+  // 知识库编辑弹窗状态
+  const [editingKB, setEditingKB] = useState<{ cookieId: string; itemId: string; title: string } | null>(null)
 
   const loadItems = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -392,11 +396,10 @@ export function Items() {
                     <td>
                       <button
                         onClick={() => handleToggleMultiSpec(item)}
-                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                          (item.is_multi_spec || item.has_sku)
+                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${(item.is_multi_spec || item.has_sku)
                             ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
                             : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
-                        }`}
+                          }`}
                         title={(item.is_multi_spec || item.has_sku) ? '点击关闭多规格' : '点击开启多规格'}
                       >
                         {(item.is_multi_spec || item.has_sku) ? '已开启' : '已关闭'}
@@ -405,11 +408,10 @@ export function Items() {
                     <td>
                       <button
                         onClick={() => handleToggleMultiQuantity(item)}
-                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                          item.multi_quantity_delivery
+                        className={`px-2 py-1 rounded text-xs font-medium transition-colors ${item.multi_quantity_delivery
                             ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
                             : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
-                        }`}
+                          }`}
                         title={item.multi_quantity_delivery ? '点击关闭多数量发货' : '点击开启多数量发货'}
                       >
                         {item.multi_quantity_delivery ? '已开启' : '已关闭'}
@@ -420,6 +422,17 @@ export function Items() {
                     </td>
                     <td className="sticky right-0 bg-white dark:bg-slate-900">
                       <div className="flex gap-1">
+                        <button
+                          onClick={() => setEditingKB({
+                            cookieId: item.cookie_id,
+                            itemId: item.item_id,
+                            title: item.item_title || item.title || ''
+                          })}
+                          className="table-action-btn hover:!bg-purple-50"
+                          title="知识库"
+                        >
+                          <FileText className="w-4 h-4 text-purple-500" />
+                        </button>
                         <button
                           onClick={() => handleEdit(item)}
                           className="table-action-btn hover:!bg-blue-50"
@@ -509,6 +522,20 @@ export function Items() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 知识库编辑弹窗 */}
+      {editingKB && (
+        <KnowledgeBaseEditor
+          cookieId={editingKB.cookieId}
+          itemId={editingKB.itemId}
+          itemTitle={editingKB.title}
+          onClose={() => setEditingKB(null)}
+          onSaved={() => {
+            setEditingKB(null)
+            loadItems()
+          }}
+        />
       )}
     </div>
   )

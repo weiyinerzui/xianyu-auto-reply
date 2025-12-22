@@ -358,7 +358,13 @@ class AIReplyEngine:
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"
                 item_desc += f"商品价格: {item_info.get('price', '未知')}元\n"
-                item_desc += f"商品描述: {item_info.get('desc', '无')}"
+                item_desc += f"商品描述: {item_info.get('desc', '无')}\n"
+
+                # 🔧 新增：知识库注入
+                knowledge_base = item_info.get('knowledge_base', '')
+                if knowledge_base:
+                    item_desc += f"\n【知识库】\n{knowledge_base}"
+                    logger.debug(f"已注入知识库，长度: {len(knowledge_base)} 字符")
 
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条

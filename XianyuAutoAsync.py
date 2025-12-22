@@ -960,6 +960,9 @@ class XianyuLive:
             '[已付款，待发货]',
             '我已付款，等待你发货',
             '[记得及时发货]',
+            # 补充缺失的关键词（与order_status_handler.py保持一致）
+            '[买家已付款]',
+            '[付款完成]',
         ]
 
         # 检查消息是否包含任何触发关键字
@@ -7391,6 +7394,31 @@ class XianyuLive:
                     # return
             except:
                 pass
+
+            # 【重要】提前检查自动发货触发消息（在is_chat_message之前）
+            # 这样即使消息不是标准聊天消息格式，也能触发自动发货
+            try:
+                early_reminder_content = None
+                if isinstance(message, dict) and "1" in message and isinstance(message["1"], dict):
+                    message_1_early = message["1"]
+                    if "10" in message_1_early and isinstance(message_1_early["10"], dict):
+                        early_reminder_content = message_1_early["10"].get("reminderContent", "")
+                
+                if early_reminder_content and self._is_auto_delivery_trigger(early_reminder_content):
+                    logger.info(f'[{msg_time}] 【{self.cookie_id}】【提前检查】检测到自动发货触发消息: {early_reminder_content}')
+                    # 提取必要的用户信息
+                    message_10_early = message["1"]["10"]
+                    early_send_user_name = message_10_early.get("senderNick", message_10_early.get("reminderTitle", "未知用户"))
+                    early_send_user_id = message_10_early.get("senderUserId", "unknown")
+                    early_chat_id_raw = message["1"].get("2", "")
+                    early_chat_id = early_chat_id_raw.split('@')[0] if '@' in str(early_chat_id_raw) else str(early_chat_id_raw)
+                    
+                    # 直接调用自动发货处理
+                    await self._handle_auto_delivery(websocket, message, early_send_user_name, early_send_user_id,
+                                                   item_id, early_chat_id, msg_time)
+                    return
+            except Exception as early_check_e:
+                logger.debug(f"提前检查自动发货触发失败: {self._safe_str(early_check_e)}")
 
             # 判断是否为聊天消息
             if not self.is_chat_message(message):

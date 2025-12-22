@@ -364,7 +364,7 @@ export function Accounts() {
     setDefaultReplyAccount(account)
     setDefaultReplyContent('')
     setActiveModal('default-reply')
-    
+
     // 加载当前默认回复
     try {
       const result = await getDefaultReply(account.id)
@@ -376,7 +376,7 @@ export function Accounts() {
 
   const handleSaveDefaultReply = async () => {
     if (!defaultReplyAccount) return
-    
+
     try {
       setDefaultReplySaving(true)
       await updateDefaultReply(defaultReplyAccount.id, defaultReplyContent)
@@ -393,7 +393,16 @@ export function Accounts() {
   const handleToggleAI = async (account: AccountWithKeywordCount) => {
     const newEnabled = !account.aiEnabled
     try {
-      await updateAIReplySettings(account.id, { enabled: newEnabled })
+      // 先获取当前完整设置，避免覆盖其他字段（如custom_prompts）
+      const currentSettings = await getAIReplySettings(account.id)
+
+      // 只更新enabled字段，保留其他所有设置
+      await updateAIReplySettings(account.id, {
+        ...currentSettings,
+        enabled: newEnabled,
+        ai_enabled: newEnabled  // 兼容两种字段名
+      })
+
       setAccounts(prev => prev.map(a =>
         a.id === account.id ? { ...a, aiEnabled: newEnabled } : a,
       ))
@@ -575,11 +584,10 @@ export function Accounts() {
                     <td>
                       <button
                         onClick={() => handleToggleAI(account)}
-                        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${
-                          account.aiEnabled 
-                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50' 
+                        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${account.aiEnabled
+                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'
                             : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
-                        }`}
+                          }`}
                         title={account.aiEnabled ? '点击关闭AI回复' : '点击开启AI回复'}
                       >
                         <Bot className="w-3.5 h-3.5" />
@@ -892,14 +900,12 @@ export function Accounts() {
                   <button
                     type="button"
                     onClick={() => setEditAutoConfirm(!editAutoConfirm)}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      editAutoConfirm ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'
-                    }`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${editAutoConfirm ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'
+                      }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        editAutoConfirm ? 'translate-x-6' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editAutoConfirm ? 'translate-x-6' : 'translate-x-1'
+                        }`}
                     />
                   </button>
                 </div>

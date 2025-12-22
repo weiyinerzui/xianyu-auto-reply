@@ -1493,14 +1493,14 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def save_text_keywords_only(self, cookie_id: str, keywords: List[Tuple[str, str, str]]) -> bool:
+    def save_text_keywords_only(self, cookie_id: str, keywords: List[Tuple[str, str, str, bool]]) -> bool:
         """保存文本关键字列表，只删除文本类型的关键词，保留图片关键词"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
 
                 # 检查是否与现有图片关键词冲突
-                for keyword, reply, item_id in keywords:
+                for keyword, reply, item_id, fuzzy_match in keywords:
                     normalized_item_id = item_id if item_id and item_id.strip() else None
 
                     # 检查是否存在同名的图片关键词
@@ -1528,13 +1528,15 @@ class DBManager:
                     (cookie_id,))
 
                 # 插入新的文本关键字
-                for keyword, reply, item_id in keywords:
+                for keyword, reply, item_id, fuzzy_match in keywords:
                     # 标准化item_id：空字符串转为NULL
                     normalized_item_id = item_id if item_id and item_id.strip() else None
+                    # 转换fuzzy_match为整数
+                    fuzzy_match_int = 1 if fuzzy_match else 0
 
                     self._execute_sql(cursor,
-                        "INSERT INTO keywords (cookie_id, keyword, reply, item_id, type) VALUES (?, ?, ?, ?, 'text')",
-                        (cookie_id, keyword, reply, normalized_item_id))
+                        "INSERT INTO keywords (cookie_id, keyword, reply, item_id, type, fuzzy_match) VALUES (?, ?, ?, ?, 'text', ?)",
+                        (cookie_id, keyword, reply, normalized_item_id, fuzzy_match_int))
 
                 self.conn.commit()
                 logger.info(f"文本关键字保存成功: {cookie_id}, {len(keywords)}条，图片关键词已保留")
@@ -1619,7 +1621,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 self._execute_sql(cursor,
-                    "SELECT keyword, reply, item_id, type, image_url FROM keywords WHERE cookie_id = ?",
+                    "SELECT keyword, reply, item_id, type, image_url, fuzzy_match FROM keywords WHERE cookie_id = ?",
                     (cookie_id,))
 
                 results = []
@@ -1629,7 +1631,8 @@ class DBManager:
                         'reply': row[1],
                         'item_id': row[2],
                         'type': row[3] or 'text',  # 默认为text类型
-                        'image_url': row[4]
+                        'image_url': row[4],
+                        'fuzzy_match': row[5] if len(row) > 5 else 0  # 返回fuzzy_match字段
                     }
                     results.append(keyword_data)
 
@@ -5103,6 +5106,121 @@ class DBManager:
         except Exception as e:
             logger.error(f"清理历史数据时出错: {e}")
             return {'error': str(e)}
+
+    # ==================== 知识库管理方法 ====================
+    # 添加于 2025-12-19：知识库字段支持
+
+    def get_item_knowledge_base(self, cookie_id: str, item_id: str) -> str:
+        """获取商品知识库"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                SELECT knowledge_base FROM item_info 
+                WHERE cookie_id = ? AND item_id = ?
+                ''', (cookie_id, item_id))
+                
+                result = cursor.fetchone()
+                kb = result[0] if result and result[0] else ''
+                logger.debug(f"获取商品知识库: {cookie_id}/{item_id}, 长度: {len(kb)}")
+                return kb
+            except Exception as e:
+                logger.error(f"获取商品知识库失败: {e}")
+                return ''
+
+    def save_item_knowledge_base(self, cookie_id: str, item_id: str, knowledge_base: str) -> bool:
+        """保存商品知识库"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, '''
+                UPDATE item_info 
+                SET knowledge_base = ?, kb_updated_at = CURRENT_TIMESTAMP
+                WHERE cookie_id = ? AND item_id = ?
+                ''', (knowledge_base, cookie_id, item_id))
+                
+                self.conn.commit()
+                logger.info(f"保存商品知识库成功: {cookie_id}/{item_id}, 长度: {len(knowledge_base)}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"保存商品知识库失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def batch_export_knowledge_bases(self, cookie_id: Optional[str] = None) -> dict:
+        """批量导出知识库"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if cookie_id:
+                    query = '''
+                    SELECT id, title, knowledge_base, kb_updated_at
+                    FROM item_info 
+                    WHERE cookie_id = ? AND knowledge_base IS NOT NULL AND knowledge_base != ''
+                    '''
+                    self._execute_sql(cursor, query, (cookie_id,))
+                else:
+                    query = '''
+                    SELECT id, title, knowledge_base, kb_updated_at, cookie_id
+                    FROM item_info 
+                    WHERE knowledge_base IS NOT NULL AND knowledge_base != ''
+                    '''
+                    self._execute_sql(cursor, query)
+                
+                results = cursor.fetchall()
+                export_data = {}
+                
+                for row in results:
+                    item_data = {
+                        'title': row[1],
+                        'knowledge_base': row[2],
+                        'updated_at': row[3]
+                    }
+                    if not cookie_id:
+                        item_data['cookie_id'] = row[4]
+                        
+                    export_data[row[0]] = item_data
+                
+                logger.info(f"导出知识库: {len(export_data)} 个商品")
+                return export_data
+            except Exception as e:
+                logger.error(f"批量导出知识库失败: {e}")
+                return {}
+
+    def batch_import_knowledge_bases(self, import_data: dict, cookie_id: str) -> tuple:
+        """批量导入知识库"""
+        with self.lock:
+            success_count = 0
+            fail_count = 0
+            
+            try:
+                cursor = self.conn.cursor()
+                
+                for item_id, kb_text in import_data.items():
+                    try:
+                        self._execute_sql(cursor, '''
+                        UPDATE item_info 
+                        SET knowledge_base = ?, kb_updated_at = CURRENT_TIMESTAMP
+                        WHERE cookie_id = ? AND id = ?
+                        ''', (kb_text, cookie_id, item_id))
+                        
+                        if cursor.rowcount > 0:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                    except Exception as e:
+                        logger.error(f"导入知识库失败 {item_id}: {e}")
+                        fail_count += 1
+                
+                self.conn.commit()
+                logger.info(f"批量导入知识库: 成功 {success_count}, 失败 {fail_count}")
+                return (success_count, fail_count)
+                
+            except Exception as e:
+                logger.error(f"批量导入知识库失败: {e}")
+                self.conn.rollback()
+                return (0, len(import_data))
+
 
 
 # 全局单例
