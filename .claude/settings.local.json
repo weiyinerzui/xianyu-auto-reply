@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat /d/Backup/github/xianyu-auto-reply/docker-compose.yml)",
+      "Bash(cat /d/Backup/github/xianyu-auto-reply/frontend/package.json)",
+      "Bash(cat /d/Backup/github/xianyu-auto-reply/Dockerfile)",
+      "Bash(ls data/*.db)",
+      "Bash(ls *.db)",
+      "Bash(sqlite3 data/xianyu_data.db \"SELECT name FROM sqlite_master WHERE type=''table'' AND name LIKE ''%ai%'' OR name LIKE ''%system%'';\")",
+      "Bash(sqlite3 data/xianyu_data.db \"SELECT * FROM system_settings WHERE key LIKE ''%ai%'';\")",
+      "Bash(sqlite3 data/xianyu_data.db \"SELECT name FROM sqlite_master WHERE type=''table'' AND name LIKE ''%reply%'';\")",
+      "Bash(sqlite3 data/xianyu_data.db \"SELECT * FROM ai_reply_settings;\")",
+      "Bash(sqlite3 data/xianyu_data.db \".schema ai_reply_settings\")"
+    ]
+  }
+}

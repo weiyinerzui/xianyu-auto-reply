@@ -61,6 +61,10 @@ export function Accounts() {
   const [aiCustomPrompts, setAiCustomPrompts] = useState('')
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
+  // AI API配置（账号级别）
+  const [aiApiKey, setAiApiKey] = useState('')
+  const [aiBaseUrl, setAiBaseUrl] = useState('')
+  const [aiModelName, setAiModelName] = useState('')
 
   const loadAccounts = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -419,11 +423,15 @@ export function Accounts() {
     setAiSettingsLoading(true)
     try {
       const settings = await getAIReplySettings(account.id)
-      setAiEnabled(settings.enabled ?? false)
+      setAiEnabled(settings.enabled ?? settings.ai_enabled ?? false)
       setAiMaxDiscountPercent(settings.max_discount_percent ?? 10)
       setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
       setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
       setAiCustomPrompts(settings.custom_prompts ?? '')
+      // 加载账号级别的API配置
+      setAiApiKey(settings.api_key ?? '')
+      setAiBaseUrl(settings.base_url ?? '')
+      setAiModelName(settings.model_name ?? '')
     } catch {
       addToast({ type: 'error', message: '加载AI设置失败' })
     } finally {
@@ -437,10 +445,15 @@ export function Accounts() {
       setAiSettingsSaving(true)
       await updateAIReplySettings(aiSettingsAccount.id, {
         enabled: aiEnabled,
+        ai_enabled: aiEnabled,
         max_discount_percent: aiMaxDiscountPercent,
         max_discount_amount: aiMaxDiscountAmount,
         max_bargain_rounds: aiMaxBargainRounds,
         custom_prompts: aiCustomPrompts,
+        // 账号级别的API配置（留空则使用系统设置）
+        api_key: aiApiKey || undefined,
+        base_url: aiBaseUrl || undefined,
+        model_name: aiModelName || undefined,
       })
       // 更新本地状态
       setAccounts(prev => prev.map(a =>
@@ -585,8 +598,8 @@ export function Accounts() {
                       <button
                         onClick={() => handleToggleAI(account)}
                         className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors ${account.aiEnabled
-                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'
-                            : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
+                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600'
                           }`}
                         title={account.aiEnabled ? '点击关闭AI回复' : '点击开启AI回复'}
                       >
@@ -1039,6 +1052,43 @@ export function Accounts() {
                       disabled
                       className="input-ios bg-slate-100 dark:bg-slate-700"
                     />
+                  </div>
+
+                  {/* AI API配置 */}
+                  <div className="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">
+                    <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">AI模型配置（可选，留空使用系统设置）</h3>
+                    <div className="space-y-3">
+                      <div className="input-group">
+                        <label className="input-label text-xs">API Base URL</label>
+                        <input
+                          type="text"
+                          value={aiBaseUrl}
+                          onChange={(e) => setAiBaseUrl(e.target.value)}
+                          className="input-ios font-mono text-xs"
+                          placeholder="例如: https://ark.cn-beijing.volces.com/api/v3"
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label text-xs">API Key</label>
+                        <input
+                          type="password"
+                          value={aiApiKey}
+                          onChange={(e) => setAiApiKey(e.target.value)}
+                          className="input-ios font-mono text-xs"
+                          placeholder="留空使用系统设置"
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label text-xs">模型名称</label>
+                        <input
+                          type="text"
+                          value={aiModelName}
+                          onChange={(e) => setAiModelName(e.target.value)}
+                          className="input-ios text-xs"
+                          placeholder="例如: doubao-1-5-pro-256k-250115"
+                        />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">

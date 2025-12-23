@@ -71,8 +71,8 @@ class AIReplyEngine:
         try:
             logger.info(f"创建新的OpenAI客户端实例 {cookie_id}: base_url={settings['base_url']}, api_key={'***' + settings['api_key'][-4:] if settings['api_key'] else 'None'}")
             client = OpenAI(
-                api_key=settings['api_key'],
-                base_url=settings['base_url']
+                api_key=settings['api_key'].strip(),
+                base_url=settings['base_url'].strip()
             )
             logger.info(f"为账号 {cookie_id} 创建OpenAI客户端成功，实际base_url: {client.base_url}")
             return client

@@ -4233,14 +4233,14 @@ class BatchDeleteRequest(BaseModel):
 
 
 class AIReplySettings(BaseModel):
-    ai_enabled: bool
-    model_name: str = "qwen-plus"
-    api_key: str = ""
-    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    max_discount_percent: int = 10
-    max_discount_amount: int = 100
-    max_bargain_rounds: int = 3
-    custom_prompts: str = ""
+    ai_enabled: Optional[bool] = None
+    model_name: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_discount_percent: Optional[int] = None
+    max_discount_amount: Optional[int] = None
+    max_bargain_rounds: Optional[int] = None
+    custom_prompts: Optional[str] = None
 
 
 # ==================== 知识库管理 ====================
@@ -4524,15 +4524,18 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
         # 使用 exclude_unset=True 只包含请求中明确提供的字段
         # 这样可以防止Pydantic的默认值覆盖数据库中已有的值（例如NULL）
         settings_dict = settings.dict(exclude_unset=True)
+        logger.info(f"接收到AI回复设置更新请求 {cookie_id}: {settings_dict}")
+        
         success = db_manager.save_ai_reply_settings(cookie_id, settings_dict)
 
         if success:
 
             # 如果启用了AI回复，记录日志
-            if settings.ai_enabled:
-                logger.info(f"账号 {cookie_id} 启用AI回复")
-            else:
-                logger.info(f"账号 {cookie_id} 禁用AI回复")
+            if settings.ai_enabled is not None:
+                if settings.ai_enabled:
+                    logger.info(f"账号 {cookie_id} 启用AI回复")
+                else:
+                    logger.info(f"账号 {cookie_id} 禁用AI回复")
 
             return {"message": "AI回复设置更新成功"}
         else:

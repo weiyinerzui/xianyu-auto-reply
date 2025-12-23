@@ -1807,13 +1807,13 @@ class DBManager:
                     # 可选字段：只有明确传入时才更新（支持设置为NULL或空字符串）
                     if 'model_name' in settings:
                         update_parts.append('model_name = ?')
-                        values.append(settings['model_name'] if settings['model_name'] else None)
+                        values.append(settings['model_name'].strip() if settings['model_name'] else None)
                     if 'api_key' in settings:
                         update_parts.append('api_key = ?')
-                        values.append(settings['api_key'] if settings['api_key'] else None)
+                        values.append(settings['api_key'].strip() if settings['api_key'] else None)
                     if 'base_url' in settings:
                         update_parts.append('base_url = ?')
-                        values.append(settings['base_url'] if settings['base_url'] else None)
+                        values.append(settings['base_url'].strip() if settings['base_url'] else None)
                     
                     if not update_parts:
                         logger.debug(f"AI回复设置没有变更: {cookie_id}")
@@ -1835,9 +1835,9 @@ class DBManager:
                     ''', (
                         cookie_id,
                         settings.get('ai_enabled', False),
-                        settings.get('model_name') if settings.get('model_name') else None,
-                        settings.get('api_key') if settings.get('api_key') else None,
-                        settings.get('base_url') if settings.get('base_url') else None,
+                        settings.get('model_name').strip() if settings.get('model_name') else None,
+                        settings.get('api_key').strip() if settings.get('api_key') else None,
+                        settings.get('base_url').strip() if settings.get('base_url') else None,
                         settings.get('max_discount_percent', 10),
                         settings.get('max_discount_amount', 100),
                         settings.get('max_bargain_rounds', 3),
@@ -1876,12 +1876,25 @@ class DBManager:
                 system_model = self.get_system_setting('ai_model') or 'qwen-plus'
                 
                 if result:
+                    # 调试：打印数据库中的原始值，帮助排查配置问题
+                    logger.info(f"【AI设置调试】账号 {cookie_id} 数据库原始值: "
+                                f"model_name='{result[1]}', api_key='{result[2][-6:] if result[2] else 'NULL'}', "
+                                f"base_url='{result[3]}'")
+                    
+                    # 判断是否使用回退值
+                    using_fallback = []
+                    if not result[1]: using_fallback.append('model_name')
+                    if not result[2]: using_fallback.append('api_key')
+                    if not result[3]: using_fallback.append('base_url')
+                    if using_fallback:
+                        logger.warning(f"【AI设置调试】账号 {cookie_id} 以下字段使用系统默认值: {using_fallback}")
+                    
                     # 账号有设置，但如果api_key/base_url/model_name为空，使用系统设置
                     return {
                         'ai_enabled': bool(result[0]),
-                        'model_name': result[1] if result[1] else system_model,
-                        'api_key': result[2] if result[2] else system_api_key,
-                        'base_url': result[3] if result[3] else system_base_url,
+                        'model_name': result[1].strip() if result[1] else system_model,
+                        'api_key': result[2].strip() if result[2] else system_api_key,
+                        'base_url': result[3].strip() if result[3] else system_base_url,
                         'max_discount_percent': result[4],
                         'max_discount_amount': result[5],
                         'max_bargain_rounds': result[6],
