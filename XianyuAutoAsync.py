@@ -963,15 +963,11 @@ class XianyuLive:
             # 补充缺失的关键词（与order_status_handler.py保持一致）
             '[买家已付款]',
             '[付款完成]',
-            '已拍',
         ]
 
         # 检查消息是否包含任何触发关键字
         for keyword in auto_delivery_keywords:
             if keyword in message:
-                # 特殊处理：如果包含"已拍"，但同时包含"待付款"，则不是自动发货触发
-                if keyword == '已拍' and '待付款' in message:
-                    continue
                 return True
 
         return False
