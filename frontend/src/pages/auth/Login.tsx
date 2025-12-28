@@ -79,11 +79,11 @@ export function Login() {
   useEffect(() => {
     getRegistrationStatus()
       .then((result) => setRegistrationEnabled(result.enabled))
-      .catch(() => {})
+      .catch(() => { })
 
     getLoginInfoStatus()
       .then((result) => setShowDefaultLogin(result.enabled))
-      .catch(() => {})
+      .catch(() => { })
   }, [])
 
   // Load captcha when switching to email-code
@@ -209,8 +209,15 @@ export function Login() {
           username: result.username!,
           is_admin: result.is_admin!,
         })
-        addToast({ type: 'success', message: '登录成功' })
-        navigate('/dashboard')
+
+        // 安全修复：检查是否需要强制修改密码
+        if (result.password_change_required) {
+          addToast({ type: 'warning', message: '请立即修改默认密码以保障账号安全' })
+          navigate('/settings')  // 跳转到设置页面修改密码
+        } else {
+          addToast({ type: 'success', message: '登录成功' })
+          navigate('/dashboard')
+        }
       } else {
         addToast({ type: 'error', message: result.message || '登录失败' })
       }
@@ -242,7 +249,7 @@ export function Login() {
       </button>
 
       {/* Left side - Branding */}
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.5 }}
@@ -250,7 +257,7 @@ export function Login() {
       >
         <div className="absolute inset-0 bg-gradient-to-br from-blue-600/20 to-transparent" />
         <div className="relative z-10 flex flex-col justify-center px-16">
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2, duration: 0.5 }}
@@ -261,7 +268,7 @@ export function Login() {
             </div>
             <span className="text-2xl font-bold text-white">闲鱼管理系统</span>
           </motion.div>
-          <motion.h1 
+          <motion.h1
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3, duration: 0.5 }}
@@ -269,7 +276,7 @@ export function Login() {
           >
             高效专业的<br />闲鱼自动化管理平台
           </motion.h1>
-          <motion.p 
+          <motion.p
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4, duration: 0.5 }}
@@ -292,7 +299,7 @@ export function Login() {
           className="w-full max-w-md"
         >
           {/* Mobile header */}
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1, duration: 0.4 }}
@@ -538,7 +545,7 @@ export function Login() {
 
           {/* Footer */}
           <p className="text-center mt-6 text-slate-400 dark:text-slate-500 text-xs">
-            © {new Date().getFullYear()} 划算云服务器 · 
+            © {new Date().getFullYear()} 划算云服务器 ·
             <a href="https://www.hsykj.com" target="_blank" rel="noopener noreferrer" className="hover:text-blue-600 dark:hover:text-blue-400 ml-1 transition-colors">
               www.hsykj.com
             </a>

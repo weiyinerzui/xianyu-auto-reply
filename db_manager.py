@@ -13,6 +13,17 @@ from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Dict, Optional, Any
 from loguru import logger
 
+# 允许的表名白名单（SQL注入防护）
+ALLOWED_TABLES = frozenset([
+    'cookies', 'keywords', 'cards', 'delivery_rules',
+    'notification_channels', 'default_replies', 'item_info',
+    'orders', 'chat_logs', 'users', 'system_settings',
+    'email_verifications', 'captcha_codes', 'message_notifications',
+    'user_settings', 'risk_control_logs', 'default_reply_records',
+    'item_replay', 'old_notification_channels', 'legacy_delivery_rules',
+    'old_keywords', 'backup_cookies'
+])
+
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
     
@@ -433,8 +444,7 @@ class DBManager:
             ('smtp_password', '', 'SMTP登录密码/授权码'),
             ('smtp_from', '', '发件人显示名（留空则使用用户名）'),
             ('smtp_use_tls', 'true', '是否启用TLS'),
-            ('smtp_use_ssl', 'false', '是否启用SSL'),
-            ('qq_reply_secret_key', 'xianyu_qq_reply_2024', 'QQ回复消息API秘钥')
+            ('smtp_use_ssl', 'false', '是否启用SSL')
             ''')
 
             # 检查并升级数据库
@@ -2881,37 +2891,18 @@ class DBManager:
             return await self._send_email_via_api(email, subject, text_content)
 
     async def _send_email_via_api(self, email: str, subject: str, text_content: str) -> bool:
-        """使用API方式发送邮件"""
-        try:
-            import aiohttp
-
-            # 使用GET请求发送邮件
-            api_url = "https://dy.zhinianboke.com/api/emailSend"
-            params = {
-                'subject': subject,
-                'receiveUser': email,
-                'sendHtml': text_content
-            }
-
-            async with aiohttp.ClientSession() as session:
-                try:
-                    logger.info(f"使用API发送验证码邮件: {email}")
-                    async with session.get(api_url, params=params, timeout=15) as response:
-                        response_text = await response.text()
-                        logger.info(f"邮件API响应: {response.status}")
-
-                        if response.status == 200:
-                            logger.info(f"验证码邮件发送成功(API): {email}")
-                            return True
-                        else:
-                            logger.error(f"API发送验证码邮件失败: {email}, 状态码: {response.status}, 响应: {response_text[:200]}")
-                            return False
-                except Exception as e:
-                    logger.error(f"API邮件发送异常: {email}, 错误: {e}")
-                    return False
-        except Exception as e:
-            logger.error(f"API邮件发送方法异常: {e}")
-            return False
+        """
+        使用API方式发送邮件 - 已禁用（安全修复）
+        
+        原方法调用外部服务器 dy.zhinianboke.com，存在数据泄露风险。
+        请在系统设置中配置SMTP服务器来发送邮件。
+        """
+        logger.warning("=" * 60)
+        logger.warning("⚠️ 外部邮件API已禁用（安全修复）")
+        logger.warning("请在【系统设置】中配置SMTP服务器来发送邮件")
+        logger.warning("支持的邮箱：QQ邮箱、163邮箱、Gmail等")
+        logger.warning("=" * 60)
+        return False
 
     # ==================== 卡券管理方法 ====================
 
@@ -4553,6 +4544,47 @@ class DBManager:
                 logger.error(f"插入或更新订单失败: {order_id} - {e}")
                 self.conn.rollback()
                 return False
+
+    def get_latest_order_by_buyer(self, cookie_id: str, buyer_id: str) -> Optional[Dict]:
+        """获取买家最新的订单（用于自动发货兜底）
+
+        Args:
+            cookie_id: Cookie ID
+            buyer_id: 买家ID
+
+        Returns:
+            Optional[Dict]: 订单信息字典，如果未找到则返回None
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                # 查找该买家最近的订单，优先找已付款或待发货的
+                cursor.execute('''
+                SELECT order_id, item_id, buyer_id, order_status, created_at
+                FROM orders
+                WHERE cookie_id = ? AND buyer_id = ?
+                ORDER BY
+                    CASE
+                        WHEN order_status IN ('2', '已付款', '待发货') THEN 1
+                        ELSE 2
+                    END,
+                    created_at DESC
+                LIMIT 1
+                ''', (cookie_id, buyer_id))
+
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'order_status': row[3],
+                        'created_at': row[4]
+                    }
+                return None
+            except Exception as e:
+                logger.error(f"获取买家最新订单失败: {e}")
+                return None
 
     def get_order_by_id(self, order_id: str):
         """根据订单ID获取订单信息"""

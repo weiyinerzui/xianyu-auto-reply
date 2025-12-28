@@ -20,6 +20,7 @@ export interface LoginResponse {
   user_id?: number
   username?: string
   is_admin?: boolean
+  password_change_required?: boolean  // 安全修复：是否需要强制修改密码
 }
 
 // 账号相关类型
@@ -102,12 +103,12 @@ export interface Order {
   updated_at?: string
 }
 
-export type OrderStatus = 
-  | 'processing' 
-  | 'processed' 
-  | 'shipped' 
-  | 'completed' 
-  | 'cancelled' 
+export type OrderStatus =
+  | 'processing'
+  | 'processed'
+  | 'shipped'
+  | 'completed'
+  | 'cancelled'
   | 'unknown'
 
 // 卡券相关类型

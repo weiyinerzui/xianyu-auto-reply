@@ -963,6 +963,7 @@ class XianyuLive:
             # 补充缺失的关键词（与order_status_handler.py保持一致）
             '[买家已付款]',
             '[付款完成]',
+            '已拍',
         ]
 
         # 检查消息是否包含任何触发关键字
@@ -1103,9 +1104,24 @@ class XianyuLive:
             # 提取订单ID
             order_id = self._extract_order_id(message)
 
-            # 如果order_id不存在，直接返回
+            # 如果order_id不存在，尝试从数据库获取该用户最新的订单
             if not order_id:
-                logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，跳过自动发货')
+                logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，尝试查找用户 {send_user_id} 的最新订单')
+                try:
+                    from db_manager import db_manager
+                    # 获取用户最新的订单（状态为已付款或待发货）
+                    latest_order = db_manager.get_latest_order_by_buyer(self.cookie_id, send_user_id)
+                    if latest_order:
+                        order_id = latest_order.get('order_id')
+                        logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 找到用户最新订单: {order_id} (状态: {latest_order.get("order_status")})')
+                    else:
+                        logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未找到用户 {send_user_id} 的有效订单')
+                except Exception as e:
+                    logger.error(f'[{msg_time}] 【{self.cookie_id}】查找最新订单失败: {self._safe_str(e)}')
+
+            # 如果仍然没有order_id，直接返回
+            if not order_id:
+                logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 无法获取订单ID，跳过自动发货')
                 return
 
             # 订单ID已提取，将在自动发货时进行确认发货处理
@@ -3370,21 +3386,29 @@ class XianyuLive:
             from db_manager import db_manager
             item_info_raw = db_manager.get_item_info(self.cookie_id, item_id)
 
+            # 获取知识库内容
+            knowledge_base = db_manager.get_item_knowledge_base(self.cookie_id, item_id)
+            
             if not item_info_raw:
                 logger.warning(f"数据库中无商品信息: {item_id}")
                 # 使用默认商品信息
                 item_info = {
                     'title': '商品信息获取失败',
                     'price': 0,
-                    'desc': '暂无商品描述'
+                    'desc': '暂无商品描述',
+                    'knowledge_base': knowledge_base
                 }
             else:
                 # 解析数据库中的商品信息
                 item_info = {
                     'title': item_info_raw.get('item_title', '未知商品'),
                     'price': self._parse_price(item_info_raw.get('item_price', '0')),
-                    'desc': item_info_raw.get('item_detail', '暂无商品描述')
+                    'desc': item_info_raw.get('item_detail', '暂无商品描述'),
+                    'knowledge_base': knowledge_base
                 }
+            
+            if knowledge_base:
+                logger.info(f"【{self.cookie_id}】已加载商品知识库，长度: {len(knowledge_base)} 字符")
 
             # 生成AI回复
             # 由于外部已实现防抖机制，跳过内部等待（skip_wait=True）
@@ -3551,47 +3575,92 @@ class XianyuLive:
             return {"config": config}
 
     async def _send_qq_notification(self, config_data: dict, message: str):
-        """发送QQ通知"""
+        """
+        发送QQ通知（安全修复：仅支持本地服务）
+        
+        支持的本地服务类型：
+        - go-cqhttp: http://127.0.0.1:5700
+        - NapCat: http://127.0.0.1:3000
+        - Webhook: 任意自定义URL
+        
+        配置格式：
+        {
+            "type": "go-cqhttp" | "napcat" | "webhook",
+            "api_url": "http://127.0.0.1:5700",
+            "qq_number": "目标QQ号",
+            "webhook_url": "可选，用于webhook类型"
+        }
+        """
         try:
             import aiohttp
 
-            logger.info(f"📱 QQ通知 - 开始处理配置数据: {config_data}")
+            logger.info(f"📱 QQ通知 - 开始处理配置数据")
 
-            # 解析配置（QQ号码）
+            # 获取通知类型和配置
+            notification_type = config_data.get('type', 'local')
+            api_url = config_data.get('api_url', '')
             qq_number = config_data.get('qq_number') or config_data.get('config', '')
             qq_number = qq_number.strip() if qq_number else ''
 
-            logger.info(f"📱 QQ通知 - 解析到QQ号码: {qq_number}")
+            # 安全修复：拒绝外部服务器
+            if api_url and 'zhinianblog' in api_url.lower():
+                logger.warning("=" * 60)
+                logger.warning("⚠️ 外部QQ通知服务已禁用（安全修复）")
+                logger.warning("请配置本地QQ通知服务：")
+                logger.warning("  - go-cqhttp: https://docs.go-cqhttp.org/")
+                logger.warning("  - NapCat: https://napneko.github.io/")
+                logger.warning("=" * 60)
+                return
 
-            if not qq_number:
+            if not qq_number and notification_type != 'webhook':
                 logger.warning("📱 QQ通知 - QQ号码配置为空，无法发送通知")
                 return
 
-            # 构建请求URL
-            api_url = "http://notice.zhinianblog.cn/sendPrivateMsg"
-            params = {
-                'qq': qq_number,
-                'msg': message
-            }
+            # 默认本地API地址
+            if not api_url:
+                if notification_type == 'go-cqhttp':
+                    api_url = "http://127.0.0.1:5700"
+                elif notification_type == 'napcat':
+                    api_url = "http://127.0.0.1:3000"
+                else:
+                    logger.warning("📱 QQ通知 - 未配置API地址，请在通知渠道设置中配置")
+                    logger.warning("📱 支持：go-cqhttp (端口5700)、NapCat (端口3000)")
+                    return
 
-            logger.info(f"📱 QQ通知 - 请求URL: {api_url}")
-            logger.info(f"📱 QQ通知 - 请求参数: qq={qq_number}, msg长度={len(message)}")
-
-            # 发送GET请求
             async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, params=params, timeout=10) as response:
-                    response_text = await response.text()
-                    logger.info(f"📱 QQ通知 - 响应状态: {response.status}")
+                if notification_type in ['go-cqhttp', 'napcat']:
+                    # OneBot协议（go-cqhttp / NapCat）
+                    endpoint = f"{api_url}/send_private_msg"
+                    payload = {
+                        "user_id": int(qq_number),
+                        "message": message
+                    }
+                    async with session.post(endpoint, json=payload, timeout=10) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            if result.get('status') == 'ok':
+                                logger.info(f"📱 QQ通知发送成功: {qq_number}")
+                            else:
+                                logger.warning(f"📱 QQ通知发送失败: {result}")
+                        else:
+                            logger.warning(f"📱 QQ通知发送失败: HTTP {response.status}")
 
-                    # 需求：502 视为成功，且不打印返回内容
-                    if response.status == 502:
-                        logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
-                    elif response.status == 200:
-                        logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
-                        logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
-                    else:
-                        logger.warning(f"📱 QQ通知发送失败: HTTP {response.status}")
-                        logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
+                elif notification_type == 'webhook':
+                    # 通用Webhook
+                    webhook_url = config_data.get('webhook_url') or api_url
+                    payload = {
+                        "qq": qq_number,
+                        "message": message
+                    }
+                    async with session.post(webhook_url, json=payload, timeout=10) as response:
+                        if response.status in [200, 201, 204]:
+                            logger.info(f"📱 Webhook通知发送成功")
+                        else:
+                            logger.warning(f"📱 Webhook通知发送失败: HTTP {response.status}")
+
+                else:
+                    logger.warning(f"📱 不支持的通知类型: {notification_type}")
+                    logger.warning("📱 支持的类型: go-cqhttp, napcat, webhook")
 
         except Exception as e:
             logger.error(f"📱 发送QQ通知异常: {self._safe_str(e)}")

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -41,12 +41,36 @@ KEYWORDS_FILE = Path(__file__).parent / "回复关键字.txt"
 
 # 简单的用户认证配置
 ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
+DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码（用户应立即修改）
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
 
 # HTTP Bearer认证
 security = HTTPBearer(auto_error=False)
+
+# 登录失败保护（安全修复）
+LOGIN_MAX_ATTEMPTS = 5  # 最大登录尝试次数
+LOGIN_LOCKOUT_TIME = 300  # 锁定时间（秒）
+login_attempts = defaultdict(list)  # {ip: [timestamp1, timestamp2, ...]}
+
+def check_login_rate_limit(ip: str) -> bool:
+    """检查是否超过登录尝试次数限制"""
+    now = time.time()
+    # 清理过期记录
+    login_attempts[ip] = [t for t in login_attempts[ip] if now - t < LOGIN_LOCKOUT_TIME]
+    return len(login_attempts[ip]) < LOGIN_MAX_ATTEMPTS
+
+def record_failed_login(ip: str):
+    """记录失败的登录尝试"""
+    login_attempts[ip].append(time.time())
+
+def get_remaining_lockout_time(ip: str) -> int:
+    """获取剩余锁定时间（秒）"""
+    if not login_attempts[ip]:
+        return 0
+    oldest_attempt = min(login_attempts[ip])
+    remaining = LOGIN_LOCKOUT_TIME - (time.time() - oldest_attempt)
+    return max(0, int(remaining))
 
 # 扫码登录检查锁 - 防止并发处理同一个session
 qr_check_locks = defaultdict(lambda: asyncio.Lock())
@@ -57,6 +81,7 @@ password_login_sessions = {}  # {session_id: {'account_id': str, 'account': str,
 password_login_locks = defaultdict(lambda: asyncio.Lock())
 
 # 不再需要单独的密码初始化，由数据库初始化时处理
+
 
 
 def cleanup_qr_check_records():
@@ -500,8 +525,22 @@ async def register_route():
 
 # 登录接口
 @app.post('/login')
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, req: Request = None):
     from db_manager import db_manager
+    
+    # 获取客户端IP（安全修复：登录失败锁定）
+    client_ip = "unknown"
+    if req:
+        client_ip = req.client.host if req.client else "unknown"
+    
+    # 检查登录尝试次数限制
+    if not check_login_rate_limit(client_ip):
+        remaining_time = get_remaining_lockout_time(client_ip)
+        logger.warning(f"【{client_ip}】登录尝试次数过多，已锁定 {remaining_time} 秒")
+        return LoginResponse(
+            success=False,
+            message=f"登录尝试次数过多，请 {remaining_time} 秒后重试"
+        )
 
     # 判断登录方式
     if request.username and request.password:
@@ -526,16 +565,27 @@ async def login(request: LoginRequest):
                 else:
                     logger.info(f"【{user['username']}#{user['id']}】登录成功")
 
+                # 安全修复：检查admin是否使用默认密码
+                password_change_required = False
+                if user['username'] == ADMIN_USERNAME:
+                    default_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
+                    if user.get('password_hash') == default_password_hash:
+                        password_change_required = True
+                        logger.warning(f"⚠️ 【{user['username']}】使用默认密码登录，需要立即修改密码")
+
                 return LoginResponse(
                     success=True,
                     token=token,
-                    message="登录成功",
+                    message="登录成功" if not password_change_required else "登录成功，请立即修改默认密码",
                     user_id=user['id'],
                     username=user['username'],
-                    is_admin=(user['username'] == ADMIN_USERNAME)
+                    is_admin=(user['username'] == ADMIN_USERNAME),
+                    password_change_required=password_change_required
                 )
 
-        logger.warning(f"【{request.username}】登录失败：用户名或密码错误")
+        # 记录登录失败
+        record_failed_login(client_ip)
+        logger.warning(f"【{request.username}】登录失败：用户名或密码错误 (IP: {client_ip})")
         return LoginResponse(
             success=False,
             message="用户名或密码错误"
@@ -926,14 +976,6 @@ async def send_message_api(request: SendMessageRequest):
             return SendMessageResponse(
                 success=False,
                 message="API秘钥不能为空"
-            )
-
-        # 特殊测试秘钥处理
-        if cleaned_api_key == "zhinina_test_key":
-            logger.info("使用测试秘钥，直接返回成功")
-            return SendMessageResponse(
-                success=True,
-                message="接口验证成功"
             )
 
         # 验证API秘钥

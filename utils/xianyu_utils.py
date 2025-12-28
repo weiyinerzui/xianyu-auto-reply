@@ -70,8 +70,8 @@ def trans_cookies(cookies_str: str) -> dict:
 
 def generate_mid() -> str:
     """生成mid"""
-    import random
-    random_part = int(1000 * random.random())
+    import secrets
+    random_part = secrets.randbelow(1000)
     timestamp = int(time.time() * 1000)
     return f"{random_part}{timestamp} 0"
 
@@ -84,7 +84,7 @@ def generate_uuid() -> str:
 
 def generate_device_id(user_id: str) -> str:
     """生成设备ID"""
-    import random
+    import secrets
     
     # 字符集
     chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -98,10 +98,10 @@ def generate_device_id(user_id: str) -> str:
         else:
             if i == 19:
                 # 对于位置19，需要特殊处理
-                rand_val = int(16 * random.random())
+                rand_val = secrets.randbelow(16)
                 result.append(chars[(rand_val & 0x3) | 0x8])
             else:
-                rand_val = int(16 * random.random())
+                rand_val = secrets.randbelow(16)
                 result.append(chars[rand_val])
     
     return ''.join(result) + "-" + user_id
