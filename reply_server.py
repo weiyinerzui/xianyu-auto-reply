@@ -396,7 +396,8 @@ else:
     # 回退到 static 目录
     if not os.path.exists(static_dir):
         os.makedirs(static_dir, exist_ok=True)
-    logger.warning(f"⚠️ frontend/dist 不存在，使用 static 目录: {static_dir}")
+    logger.warning(f"⚠️ frontend/dist 不存在 (前端未编译)，将使用 static 目录: {static_dir}")
+    logger.warning("💡 提示: 如果您是开发环境或从源码运行，请进入 frontend 目录运行 'npm install && npm run build' 编译前端")
 
 app.mount('/static', StaticFiles(directory=static_dir), name='static')
 

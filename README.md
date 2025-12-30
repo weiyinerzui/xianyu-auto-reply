@@ -404,7 +404,14 @@ pip install -r requirements.txt
 playwright install chromium
 playwright install-deps chromium  # Linux需要
 
-# 5. 启动系统
+# 5. 编译前端（重要）
+# 如果是git克隆的代码，需要手动编译前端
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 6. 启动系统
 python Start.py
 
 # 6. 访问系统
