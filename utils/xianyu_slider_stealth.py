@@ -304,7 +304,7 @@ class XianyuSliderStealth:
         """
         try:
             # 设置截止日期
-            expiry_date = datetime(2025, 12, 30)
+            expiry_date = datetime(2099, 12, 31)
             current_date = datetime.now()
             
             # 计算剩余天数
