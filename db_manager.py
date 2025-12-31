@@ -144,6 +144,7 @@ class DBManager:
                 item_id TEXT,
                 type TEXT DEFAULT 'text',
                 image_url TEXT,
+                fuzzy_match INTEGER DEFAULT 0,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
             )
             ''')
@@ -285,6 +286,8 @@ class DBManager:
                 item_price TEXT,
                 item_detail TEXT,
                 is_multi_spec BOOLEAN DEFAULT FALSE,
+                knowledge_base TEXT,
+                kb_updated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE,
@@ -611,7 +614,16 @@ class DBManager:
                 logger.info("开始升级数据库到版本1.5...")
                 self.upgrade_cookies_table_for_account_login(cursor)
                 self.set_system_setting("db_version", "1.5", "数据库版本号")
+                self.upgrade_cookies_table_for_account_login(cursor)
+                self.set_system_setting("db_version", "1.5", "数据库版本号")
                 logger.info("数据库升级到版本1.5完成")
+
+            # 升级到版本1.6 - 添加fuzzy_match和knowledge_base字段
+            if current_version < "1.6":
+                logger.info("开始升级数据库到版本1.6...")
+                self.upgrade_db_to_v1_6(cursor)
+                self.set_system_setting("db_version", "1.6", "数据库版本号")
+                logger.info("数据库升级到版本1.6完成")
 
             # 迁移遗留数据（在所有版本升级完成后执行）
             self.migrate_legacy_data(cursor)
@@ -964,6 +976,35 @@ class DBManager:
             return True
         except Exception as e:
             logger.error(f"升级cookies表账号登录字段失败: {e}")
+            raise
+
+
+
+    def upgrade_db_to_v1_6(self, cursor):
+        """升级数据库到版本1.6 - 添加fuzzy_match和knowledge_base字段"""
+        try:
+            # 1. 检查keywords表是否有fuzzy_match字段
+            cursor.execute("PRAGMA table_info(keywords)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'fuzzy_match' not in columns:
+                logger.info("添加fuzzy_match字段到keywords表...")
+                cursor.execute("ALTER TABLE keywords ADD COLUMN fuzzy_match INTEGER DEFAULT 0")
+
+            # 2. 检查item_info表是否有knowledge_base字段
+            cursor.execute("PRAGMA table_info(item_info)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'knowledge_base' not in columns:
+                logger.info("添加knowledge_base字段到item_info表...")
+                cursor.execute("ALTER TABLE item_info ADD COLUMN knowledge_base TEXT")
+            
+            if 'kb_updated_at' not in columns:
+                logger.info("添加kb_updated_at字段到item_info表...")
+                cursor.execute("ALTER TABLE item_info ADD COLUMN kb_updated_at TIMESTAMP")
+
+        except Exception as e:
+            logger.error(f"升级数据库到版本1.6失败: {e}")
             raise
 
     def migrate_legacy_data(self, cursor):
