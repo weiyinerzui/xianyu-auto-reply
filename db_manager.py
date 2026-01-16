@@ -2378,7 +2378,7 @@ class DBManager:
                             'rows': [list(row) for row in rows]
                         }
 
-                        # 备份其他相关表
+                        # 备份其他相关表(基于cookie_id)
                         related_tables = ['cookie_status', 'default_replies', 'message_notifications',
                                         'item_info', 'ai_reply_settings', 'ai_conversations']
 
@@ -2389,6 +2389,27 @@ class DBManager:
                             backup_data['data'][table] = {
                                 'columns': columns,
                                 'rows': [list(row) for row in rows]
+                            }
+
+                    # 备份基于user_id的表(cards、notification_channels、delivery_rules)
+                    # 注意：这个逻辑在 if user_cookie_ids 之外，因为即使没有 cookie，用户也可能有这些数据
+                    user_based_tables = ['cards', 'notification_channels', 'delivery_rules']
+                    for table in user_based_tables:
+                        try:
+                            cursor.execute(f"SELECT * FROM {table} WHERE user_id = ?", (user_id,))
+                            columns = [description[0] for description in cursor.description]
+                            rows = cursor.fetchall()
+                            backup_data['data'][table] = {
+                                'columns': columns,
+                                'rows': [list(row) for row in rows]
+                            }
+                            logger.info(f"已备份 {table} 表的 {len(rows)} 条记录")
+                        except Exception as e:
+                            logger.warning(f"备份 {table} 表失败: {e}")
+                            # 如果表不存在或查询失败,继续备份其他表
+                            backup_data['data'][table] = {
+                                'columns': [],
+                                'rows': []
                             }
                 else:
                     # 系统级备份：备份所有数据
@@ -2466,7 +2487,7 @@ class DBManager:
                     if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards',
                                         'delivery_rules', 'default_replies', 'notification_channels',
                                         'message_notifications', 'system_settings', 'item_info',
-                                        'ai_reply_settings', 'ai_conversations', 'ai_item_cache']:
+                                        'ai_reply_settings', 'ai_conversations', 'ai_item_cache', 'user_settings']:
                         continue
 
                     columns = table_data['columns']
@@ -2475,15 +2496,21 @@ class DBManager:
                     if not rows:
                         continue
 
-                    # 如果是用户级导入，需要确保cookies表的user_id正确
-                    if user_id is not None and table_name == 'cookies':
-                        # 更新所有导入的cookies的user_id
-                        updated_rows = []
-                        for row in rows:
-                            row_dict = dict(zip(columns, row))
-                            row_dict['user_id'] = user_id
-                            updated_rows.append([row_dict[col] for col in columns])
-                        rows = updated_rows
+                    # 定义包含 user_id 字段的表
+                    tables_with_user_id = ['cookies', 'cards', 'notification_channels', 'delivery_rules', 'user_settings']
+
+                    # 如果是用户级导入，需要确保所有包含 user_id 的表都更新为当前用户ID
+                    if user_id is not None and table_name in tables_with_user_id:
+                        # 检查该表是否有 user_id 列
+                        if 'user_id' in columns:
+                            # 更新所有导入数据的 user_id
+                            updated_rows = []
+                            for row in rows:
+                                row_dict = dict(zip(columns, row))
+                                row_dict['user_id'] = user_id
+                                updated_rows.append([row_dict[col] for col in columns])
+                            rows = updated_rows
+                            logger.info(f"已将 {table_name} 表的 {len(rows)} 条记录的 user_id 更新为 {user_id}")
 
                     # 构建插入语句
                     placeholders = ','.join(['?' for _ in columns])
