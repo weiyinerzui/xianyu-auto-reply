@@ -205,12 +205,25 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[Dict[str, Any]]:
-    """验证token并返回用户信息"""
-    if not credentials:
+def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security), request: Request = None) -> Optional[Dict[str, Any]]:
+    """验证token并返回用户信息
+    
+    支持两种认证方式:
+    1. Authorization header (Bearer token)
+    2. 查询参数 token (用于浏览器直接下载等场景)
+    """
+    token = None
+    
+    # 优先从 Authorization header 获取
+    if credentials:
+        token = credentials.credentials
+    # 如果 header 中没有,尝试从查询参数获取
+    elif request:
+        token = request.query_params.get('token')
+    
+    if not token:
         return None
 
-    token = credentials.credentials
     if token not in SESSION_TOKENS:
         return None
 
@@ -224,9 +237,14 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
     return token_data
 
 
-def verify_admin_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
-    """验证管理员token"""
-    user_info = verify_token(credentials)
+def verify_admin_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security), request: Request = None) -> Dict[str, Any]:
+    """验证管理员token
+    
+    支持两种认证方式:
+    1. Authorization header (Bearer token)
+    2. 查询参数 token (用于浏览器直接下载等场景)
+    """
+    user_info = verify_token(credentials, request)
     if not user_info:
         raise HTTPException(status_code=401, detail="未授权访问")
 
@@ -237,8 +255,13 @@ def verify_admin_token(credentials: Optional[HTTPAuthorizationCredentials] = Dep
     return user_info
 
 
-def require_auth(user_info: Optional[Dict[str, Any]] = Depends(verify_token)):
-    """需要认证的依赖，返回用户信息"""
+def require_auth(user_info: Optional[Dict[str, Any]] = Depends(verify_token), request: Request = None):
+    """需要认证的依赖,返回用户信息
+    
+    支持两种认证方式:
+    1. Authorization header (Bearer token)
+    2. 查询参数 token (用于浏览器直接下载等场景)
+    """
     if not user_info:
         raise HTTPException(status_code=401, detail="未授权访问")
     return user_info
