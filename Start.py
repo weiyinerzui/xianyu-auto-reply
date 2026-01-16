@@ -440,7 +440,6 @@ from config import AUTO_REPLY, COOKIES_LIST
 import cookie_manager as cm
 from db_manager import db_manager
 from file_log_collector import setup_file_logging
-from usage_statistics import report_user_count
 
 
 def _start_api_server():
@@ -575,11 +574,12 @@ async def main():
     threading.Thread(target=_start_api_server, daemon=True).start()
     print("API 服务线程已启动")
 
+
     # 用户统计上报已禁用（安全修复）
     # try:
     #     await report_user_count()
     # except Exception as e:
-    #     logger.debug(f\"上报用户统计失败: {e}\")
+    #     logger.debug(f"上报用户统计失败: {e}")
 
     # 阻塞保持运行
     print("主程序启动完成，保持运行...")

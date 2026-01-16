@@ -27,7 +27,7 @@ export function Register() {
   const [sessionId] = useState(() => `session_${Math.random().toString(36).substr(2, 9)}_${Date.now()}`)
   const [captchaVerified, setCaptchaVerified] = useState(false)
   const [countdown, setCountdown] = useState(0)
-  const [emailError, setEmailError] = useState('')
+  const [verifying, setVerifying] = useState(false)
 
   useEffect(() => {
     getRegistrationStatus()
@@ -35,10 +35,11 @@ export function Register() {
         setRegistrationEnabled(result.enabled)
         if (!result.enabled) {
           addToast({ type: 'warning', message: '注册功能已关闭' })
+          setTimeout(() => navigate('/login'), 1500)
         }
       })
       .catch(() => {})
-  }, [])
+  }, [navigate, addToast])
 
   useEffect(() => {
     loadCaptcha()
@@ -50,6 +51,33 @@ export function Register() {
       return () => clearTimeout(timer)
     }
   }, [countdown])
+
+  // 自动验证图形验证码
+  useEffect(() => {
+    if (captchaCode.length === 4 && !captchaVerified && !verifying) {
+      handleVerifyCaptchaAuto()
+    }
+  }, [captchaCode])
+
+  const handleVerifyCaptchaAuto = async () => {
+    if (captchaCode.length !== 4 || verifying) return
+    setVerifying(true)
+    try {
+      const result = await verifyCaptcha(sessionId, captchaCode)
+      if (result.success) {
+        setCaptchaVerified(true)
+        addToast({ type: 'success', message: '验证码验证成功' })
+      } else {
+        setCaptchaVerified(false)
+        loadCaptcha()
+        addToast({ type: 'error', message: '验证码错误' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '验证失败' })
+    } finally {
+      setVerifying(false)
+    }
+  }
 
   const loadCaptcha = async () => {
     try {
@@ -64,45 +92,36 @@ export function Register() {
     }
   }
 
-  const handleVerifyCaptcha = async (code?: string) => {
-    const codeToVerify = code || captchaCode
-    if (codeToVerify.length !== 4) return
-
-    try {
-      const result = await verifyCaptcha(sessionId, codeToVerify)
-      if (result.success) {
-        setCaptchaVerified(true)
-        addToast({ type: 'success', message: '验证码验证成功' })
-      } else {
-        setCaptchaVerified(false)
-        loadCaptcha()
-        addToast({ type: 'error', message: '验证码错误' })
-      }
-    } catch {
-      addToast({ type: 'error', message: '验证失败' })
-    }
-  }
-
-  // 邮箱格式校验
-  const isValidEmail = (emailStr: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)
-
-  // 邮箱输入处理
-  const handleEmailChange = (value: string) => {
-    setEmail(value)
-    if (value && !isValidEmail(value)) {
-      setEmailError('请输入正确的邮箱格式')
-    } else {
-      setEmailError('')
-    }
-  }
-
   const handleSendCode = async () => {
-    if (!email) {
-      setEmailError('请输入邮箱地址')
+    // 验证表单数据
+    if (!username.trim()) {
+      addToast({ type: 'warning', message: '请先输入用户名' })
       return
     }
-    if (!isValidEmail(email)) {
-      setEmailError('请输入正确的邮箱格式')
+    if (!email.trim()) {
+      addToast({ type: 'warning', message: '请先输入邮箱地址' })
+      return
+    }
+    // 验证邮箱格式
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      addToast({ type: 'warning', message: '请输入正确的邮箱格式' })
+      return
+    }
+    if (!password) {
+      addToast({ type: 'warning', message: '请先输入密码' })
+      return
+    }
+    if (password.length < 6) {
+      addToast({ type: 'warning', message: '密码长度至少6位' })
+      return
+    }
+    if (!confirmPassword) {
+      addToast({ type: 'warning', message: '请先确认密码' })
+      return
+    }
+    if (password !== confirmPassword) {
+      addToast({ type: 'warning', message: '两次输入的密码不一致' })
       return
     }
     if (!captchaVerified) {
@@ -159,8 +178,10 @@ export function Register() {
       } else {
         addToast({ type: 'error', message: result.message || '注册失败' })
       }
-    } catch {
-      addToast({ type: 'error', message: '注册失败，请检查网络连接' })
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { detail?: string; message?: string } } }
+      const errorMsg = err?.response?.data?.detail || err?.response?.data?.message || '注册失败，请检查网络连接'
+      addToast({ type: 'error', message: errorMsg })
     } finally {
       setLoading(false)
     }
@@ -221,12 +242,11 @@ export function Register() {
                 <input
                   type="email"
                   value={email}
-                  onChange={(e) => handleEmailChange(e.target.value)}
+                  onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@example.com"
-                  className={cn('input-ios pl-9', emailError && 'border-red-500 focus:border-red-500')}
+                  className="input-ios pl-9"
                 />
               </div>
-              {emailError && <p className="text-xs text-red-500 mt-1">{emailError}</p>}
             </div>
 
             {/* Password */}
@@ -273,20 +293,11 @@ export function Register() {
                 <input
                   type="text"
                   value={captchaCode}
-                  onChange={(e) => {
-                    const val = e.target.value.toUpperCase()
-                    setCaptchaCode(val)
-                    if (val.length === 4 && !captchaVerified) {
-                      handleVerifyCaptcha(val)
-                    }
-                  }}
-                  disabled={captchaVerified}
+                  onChange={(e) => setCaptchaCode(e.target.value)}
                   placeholder="输入验证码"
                   maxLength={4}
-                  className={cn(
-                    'input-ios flex-1',
-                    captchaVerified && 'border-green-500 bg-green-50 dark:bg-green-900/20',
-                  )}
+                  className="input-ios flex-1"
+                  disabled={captchaVerified}
                 />
                 <img
                   src={captchaImage}
@@ -297,9 +308,9 @@ export function Register() {
               </div>
               <p className={cn(
                 'text-xs',
-                captchaVerified ? 'text-green-600 dark:text-green-400' : 'text-slate-400'
+                captchaVerified ? 'text-green-600 dark:text-green-400' : verifying ? 'text-blue-500' : 'text-slate-400'
               )}>
-                {captchaVerified ? '✓ 验证成功，可以发送邮箱验证码' : '输入4位验证码后自动验证'}
+                {captchaVerified ? '✓ 验证成功' : verifying ? '验证中...' : '点击图片更换验证码'}
               </p>
             </div>
 
@@ -321,7 +332,7 @@ export function Register() {
                 <button
                   type="button"
                   onClick={handleSendCode}
-                  disabled={countdown > 0}
+                  disabled={!captchaVerified || !email || countdown > 0}
                   className="btn-ios-secondary whitespace-nowrap"
                 >
                   {countdown > 0 ? `${countdown}s` : '发送'}

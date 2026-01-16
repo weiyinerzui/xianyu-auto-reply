@@ -380,27 +380,12 @@ logger.info("Web服务器启动，文件日志收集器已初始化")
 async def log_requests(request, call_next):
     start_time = time.time()
 
-    # 获取用户信息
-    user_info = "未登录"
-    try:
-        # 从请求头中获取Authorization
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
-            if token in SESSION_TOKENS:
-                token_data = SESSION_TOKENS[token]
-                # 检查token是否过期
-                if time.time() - token_data['timestamp'] <= TOKEN_EXPIRE_TIME:
-                    user_info = f"【{token_data['username']}#{token_data['user_id']}】"
-    except Exception:
-        pass
-
-    logger.info(f"🌐 {user_info} API请求: {request.method} {request.url.path}")
+    logger.info(f"🌐 API请求: {request.method} {request.url.path}")
 
     response = await call_next(request)
 
     process_time = time.time() - start_time
-    logger.info(f"✅ {user_info} API响应: {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
+    logger.info(f"✅ API响应: {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
 
     return response
 
@@ -476,6 +461,47 @@ async def health_check():
             "timestamp": time.time(),
             "error": str(e)
         }
+
+
+# ==================== 版本检查和更新日志接口 ====================
+import httpx
+
+@app.get('/api/version/check')
+async def check_version():
+    """检查最新版本（代理外部接口）"""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getVersion')
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except Exception:
+                    # 如果不是有效JSON，返回HTML内容
+                    return {"html": response.text}
+            else:
+                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
+    except Exception as e:
+        logger.error(f"检查版本失败: {e}")
+        return {"error": True, "message": f"检查版本失败: {str(e)}"}
+
+
+@app.get('/api/version/changelog')
+async def get_changelog():
+    """获取更新日志（代理外部接口）"""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getUpdateInfo')
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except Exception:
+                    # 如果不是有效JSON，返回HTML内容
+                    return {"html": response.text}
+            else:
+                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
+    except Exception as e:
+        logger.error(f"获取更新日志失败: {e}")
+        return {"error": True, "message": f"获取更新日志失败: {str(e)}"}
 
 
 # 服务 React 前端 SPA - 所有前端路由都返回 index.html
@@ -580,6 +606,7 @@ async def login(request: LoginRequest, req: Request = None):
                 SESSION_TOKENS[token] = {
                     'user_id': user['id'],
                     'username': user['username'],
+                    'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
                     'timestamp': time.time()
                 }
 
@@ -626,6 +653,7 @@ async def login(request: LoginRequest, req: Request = None):
             SESSION_TOKENS[token] = {
                 'user_id': user['id'],
                 'username': user['username'],
+                'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
                 'timestamp': time.time()
             }
 
@@ -672,6 +700,7 @@ async def login(request: LoginRequest, req: Request = None):
         SESSION_TOKENS[token] = {
             'user_id': user['id'],
             'username': user['username'],
+            'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
             'timestamp': time.time()
         }
 
@@ -736,6 +765,63 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
     except Exception as e:
         logger.error(f"修改管理员密码异常: {e}")
         return {"success": False, "message": "系统错误"}
+
+
+# 普通用户修改密码接口
+@app.post('/change-password')
+async def change_user_password(request: ChangePasswordRequest, current_user: Dict[str, Any] = Depends(get_current_user)):
+    from db_manager import db_manager
+
+    try:
+        username = current_user.get('username')
+        user_id = current_user.get('user_id')
+        
+        if not username:
+            return {"success": False, "message": "无法获取用户信息"}
+
+        # 验证当前密码
+        if not db_manager.verify_user_password(username, request.current_password):
+            return {"success": False, "message": "当前密码错误"}
+
+        # 更新密码
+        success = db_manager.update_user_password(username, request.new_password)
+
+        if success:
+            logger.info(f"【{username}#{user_id}】用户密码修改成功")
+            return {"success": True, "message": "密码修改成功"}
+        else:
+            return {"success": False, "message": "密码修改失败"}
+
+    except Exception as e:
+        logger.error(f"修改用户密码异常: {e}")
+        return {"success": False, "message": "系统错误"}
+
+
+# 检查是否使用默认密码
+@app.get('/api/check-default-password')
+async def check_default_password(current_user: Dict[str, Any] = Depends(get_current_user)):
+    from db_manager import db_manager
+
+    try:
+        username = current_user.get('username')
+        is_admin = current_user.get('is_admin', False)
+        
+        logger.info(f"检查默认密码: username={username}, is_admin={is_admin}")
+        
+        # 只检查admin用户
+        if not is_admin or username != 'admin':
+            logger.info(f"非admin用户，跳过检查")
+            return {"using_default": False}
+
+        # 检查是否使用默认密码
+        using_default = db_manager.verify_user_password('admin', DEFAULT_ADMIN_PASSWORD)
+        logger.info(f"默认密码检查结果: {using_default}, DEFAULT_ADMIN_PASSWORD={DEFAULT_ADMIN_PASSWORD}")
+        
+        return {"using_default": using_default}
+
+    except Exception as e:
+        logger.error(f"检查默认密码异常: {e}")
+        return {"using_default": False}
 
 
 # 生成图形验证码接口
@@ -803,6 +889,179 @@ async def verify_captcha(request: VerifyCaptchaRequest):
         return VerifyCaptchaResponse(
             success=False,
             message="图形验证码验证失败"
+        )
+
+
+# ==================== 极验滑动验证码 ====================
+
+# 极验验证状态存储: {challenge: {"status": int, "expires_at": float}}
+geetest_status_store: dict = {}
+
+
+def cleanup_expired_geetest_status():
+    """清理过期的极验验证状态"""
+    current_time = time.time()
+    expired_keys = [k for k, v in geetest_status_store.items() if v["expires_at"] < current_time]
+    for k in expired_keys:
+        del geetest_status_store[k]
+
+
+def set_geetest_status(challenge: str, status: int):
+    """设置极验验证状态"""
+    cleanup_expired_geetest_status()
+    geetest_status_store[challenge] = {
+        "status": status,
+        "expires_at": time.time() + 300  # 5分钟有效
+    }
+
+
+def get_geetest_status(challenge: str) -> int:
+    """获取极验验证状态，返回0表示未验证或已过期"""
+    cleanup_expired_geetest_status()
+    stored = geetest_status_store.get(challenge)
+    if stored and stored["expires_at"] > time.time():
+        return stored["status"]
+    return 0
+
+
+class GeetestRegisterResponse(BaseModel):
+    """极验验证码初始化响应"""
+    success: bool
+    code: int = 200
+    message: str = ""
+    data: Optional[dict] = None
+
+
+class GeetestValidateRequest(BaseModel):
+    """极验二次验证请求"""
+    challenge: str
+    validate: str
+    seccode: str
+
+
+class GeetestValidateResponse(BaseModel):
+    """极验二次验证响应"""
+    success: bool
+    code: int = 200
+    message: str = ""
+
+
+@app.get('/geetest/register', response_model=GeetestRegisterResponse)
+async def geetest_register():
+    """
+    获取极验验证码初始化参数
+    
+    前端调用此接口获取gt、challenge等参数，用于初始化验证码组件
+    """
+    try:
+        from utils.geetest import GeetestLib
+        
+        gt_lib = GeetestLib()
+        result = await gt_lib.register()
+        
+        data = result.to_dict()
+        logger.info(f"极验初始化结果: status={result.status}, data={data}")
+        
+        # 记录初始状态
+        challenge = data.get("challenge", "")
+        if challenge:
+            set_geetest_status(challenge, 0)
+        
+        return GeetestRegisterResponse(
+            success=True,
+            code=200,
+            message="获取成功" if result.status == 1 else "宕机模式",
+            data=data
+        )
+            
+    except Exception as e:
+        logger.error(f"极验初始化失败: {e}")
+        # 返回本地初始化结果
+        try:
+            from utils.geetest import GeetestLib
+            gt_lib = GeetestLib()
+            result = gt_lib.local_init()
+            data = result.to_dict()
+            
+            # 记录初始状态
+            challenge = data.get("challenge", "")
+            if challenge:
+                set_geetest_status(challenge, 0)
+            
+            return GeetestRegisterResponse(
+                success=True,
+                code=200,
+                message="本地初始化",
+                data=data
+            )
+        except Exception as e2:
+            logger.error(f"极验本地初始化也失败: {e2}")
+            return GeetestRegisterResponse(
+                success=False,
+                code=500,
+                message="验证码服务异常"
+            )
+
+
+@app.post('/geetest/validate', response_model=GeetestValidateResponse)
+async def geetest_validate(request: GeetestValidateRequest):
+    """
+    极验二次验证
+    
+    用户完成滑动验证后，前端调用此接口进行二次验证
+    """
+    try:
+        # 检查是否已经验证过
+        if get_geetest_status(request.challenge) == 1:
+            return GeetestValidateResponse(
+                success=True,
+                code=200,
+                message="验证通过"
+            )
+        
+        from utils.geetest import GeetestLib
+        
+        gt_lib = GeetestLib()
+        
+        # 判断是正常模式还是宕机模式
+        # 通过challenge长度判断：正常模式challenge是32位MD5，宕机模式是UUID
+        is_normal_mode = len(request.challenge) == 32
+        
+        if is_normal_mode:
+            result = await gt_lib.success_validate(
+                request.challenge,
+                request.validate,
+                request.seccode
+            )
+        else:
+            result = gt_lib.fail_validate(
+                request.challenge,
+                request.validate,
+                request.seccode
+            )
+        
+        if result.status == 1:
+            # 记录验证通过状态
+            set_geetest_status(request.challenge, 1)
+            
+            return GeetestValidateResponse(
+                success=True,
+                code=200,
+                message="验证通过"
+            )
+        else:
+            return GeetestValidateResponse(
+                success=False,
+                code=400,
+                message=result.msg or "验证失败"
+            )
+            
+    except Exception as e:
+        logger.error(f"极验二次验证失败: {e}")
+        return GeetestValidateResponse(
+            success=False,
+            code=500,
+            message="验证服务异常"
         )
 
 
@@ -1130,6 +1389,7 @@ class CookieStatusIn(BaseModel):
 class DefaultReplyIn(BaseModel):
     enabled: bool
     reply_content: Optional[str] = None
+    reply_image_url: Optional[str] = None
     reply_once: bool = False
 
 
@@ -1239,6 +1499,46 @@ def add_cookie(item: CookieIn, current_user: Dict[str, Any] = Depends(get_curren
         log_with_user('error', f"添加Cookie失败: {item.id} - {str(e)}", current_user)
         raise HTTPException(status_code=400, detail=str(e))
 
+
+# ============ 带子路径的 /cookies/{cid}/xxx 路由必须在 /cookies/{cid} 之前定义 ============
+
+class AccountLoginInfoUpdate(BaseModel):
+    username: Optional[str] = None
+    login_password: Optional[str] = None
+    show_browser: Optional[bool] = None
+
+
+@app.put("/cookies/{cid}/login-info")
+def update_cookie_login_info(cid: str, update_data: AccountLoginInfoUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新账号登录信息（用户名、密码、是否显示浏览器）"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cid not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        # 使用现有的update_cookie_account_info方法更新登录信息
+        success = db_manager.update_cookie_account_info(
+            cid,
+            username=update_data.username,
+            password=update_data.login_password,
+            show_browser=update_data.show_browser
+        )
+
+        if success:
+            return {"success": True, "message": "登录信息已更新"}
+        else:
+            raise HTTPException(status_code=500, detail="更新登录信息失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ 通用的 /cookies/{cid} 路由 ============
 
 @app.put('/cookies/{cid}')
 def update_cookie(cid: str, item: CookieIn, current_user: Dict[str, Any] = Depends(get_current_user)):
@@ -2419,8 +2719,8 @@ def update_default_reply(cid: str, reply_data: DefaultReplyIn, current_user: Dic
         if cid not in user_cookies:
             raise HTTPException(status_code=403, detail="无权限操作该Cookie")
 
-        db_manager.save_default_reply(cid, reply_data.enabled, reply_data.reply_content, reply_data.reply_once)
-        return {'msg': 'default reply updated', 'enabled': reply_data.enabled, 'reply_once': reply_data.reply_once}
+        db_manager.save_default_reply(cid, reply_data.enabled, reply_data.reply_content, reply_data.reply_once, reply_data.reply_image_url)
+        return {'msg': 'default reply updated', 'enabled': reply_data.enabled, 'reply_once': reply_data.reply_once, 'reply_image_url': reply_data.reply_image_url}
     except HTTPException:
         raise
     except Exception as e:
@@ -2696,6 +2996,25 @@ def delete_message_notification(notification_id: int, _: None = Depends(require_
 
 # ------------------------- 系统设置接口 -------------------------
 
+@app.get('/system-settings/public')
+def get_public_system_settings():
+    """获取公开的系统设置（无需认证）"""
+    from db_manager import db_manager
+    try:
+        all_settings = db_manager.get_all_system_settings()
+        # 只返回公开的配置项
+        public_keys = {"registration_enabled", "show_default_login_info", "login_captcha_enabled"}
+        return {k: v for k, v in all_settings.items() if k in public_keys}
+    except Exception as e:
+        logger.error(f"获取公开系统设置失败: {e}")
+        # 返回默认值
+        return {
+            "registration_enabled": "true",
+            "show_default_login_info": "true",
+            "login_captcha_enabled": "true"
+        }
+
+
 @app.get('/system-settings')
 def get_system_settings(_: None = Depends(require_auth)):
     """获取系统设置（排除敏感信息）"""
@@ -2708,9 +3027,6 @@ def get_system_settings(_: None = Depends(require_auth)):
         return settings
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-
 
 
 @app.put('/system-settings/{key}')
@@ -3056,8 +3372,6 @@ def get_cookie_pause_duration(cid: str, current_user: Dict[str, Any] = Depends(g
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 class KeywordIn(BaseModel):
@@ -3410,10 +3724,19 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
         update_count = 0
         add_count = 0
 
+        def clean_cell_value(value):
+            """清理单元格值，处理数字转字符串时的 .0 后缀问题"""
+            if pd.isna(value):
+                return ''
+            # 如果是数字类型，先转为整数（如果是整数值）再转字符串
+            if isinstance(value, float) and value == int(value):
+                return str(int(value)).strip()
+            return str(value).strip()
+
         for index, row in df.iterrows():
-            keyword = str(row['关键词']).strip()
-            item_id = str(row['商品ID']).strip() if pd.notna(row['商品ID']) and str(row['商品ID']).strip() else None
-            reply = str(row['关键词内容']).strip()
+            keyword = clean_cell_value(row['关键词'])
+            item_id = clean_cell_value(row['商品ID']) or None
+            reply = clean_cell_value(row['关键词内容'])
 
             if not keyword:
                 continue  # 跳过没有关键词的行
@@ -4917,12 +5240,14 @@ async def get_all_items_from_account(request: dict, _: None = Depends(require_au
         else:
             total_count = result.get('total_count', 0)
             total_pages = result.get('total_pages', 1)
-            logger.info(f"成功获取账号 {cookie_id} 的 {total_count} 个商品（共{total_pages}页）")
+            saved_count = result.get('total_saved', 0)
+            logger.info(f"成功获取账号 {cookie_id} 的 {total_count} 个商品（共{total_pages}页），保存 {saved_count} 个")
             return {
                 "success": True,
-                "message": f"成功获取 {total_count} 个商品（共{total_pages}页），详细信息已打印到控制台",
+                "message": f"成功获取商品，共 {total_count} 件，保存 {saved_count} 件",
                 "total_count": total_count,
-                "total_pages": total_pages
+                "total_pages": total_pages,
+                "saved_count": saved_count
             }
 
     except Exception as e:
@@ -5350,40 +5675,47 @@ def get_system_stats(admin_user: Dict[str, Any] = Depends(require_admin)):
     try:
         log_with_user('info', "查询系统统计信息", admin_user)
 
-        stats = {
-            "users": {
-                "total": 0,
-                "active_today": 0
-            },
-            "cookies": {
-                "total": 0,
-                "enabled": 0
-            },
-            "cards": {
-                "total": 0,
-                "enabled": 0
-            },
-            "system": {
-                "uptime": "未知",
-                "version": "1.0.0"
-            }
-        }
-
         # 用户统计
         all_users = db_manager.get_all_users()
-        stats["users"]["total"] = len(all_users)
+        total_users = len(all_users)
 
         # Cookie统计
         all_cookies = db_manager.get_all_cookies()
-        stats["cookies"]["total"] = len(all_cookies)
+        total_cookies = len(all_cookies)
+        
+        # 活跃账号统计（启用状态的账号）
+        active_cookies = 0
+        for cookie_id in all_cookies.keys():
+            status = db_manager.get_cookie_status(cookie_id)
+            if status:
+                active_cookies += 1
 
         # 卡券统计
         all_cards = db_manager.get_all_cards()
-        if all_cards:
-            stats["cards"]["total"] = len(all_cards)
-            stats["cards"]["enabled"] = len([card for card in all_cards if card.get('enabled', True)])
+        total_cards = len(all_cards) if all_cards else 0
 
-        log_with_user('info', "系统统计信息查询完成", admin_user)
+        # 关键词统计
+        all_keywords = db_manager.get_all_keywords()
+        total_keywords = sum(len(kw_list) for kw_list in all_keywords.values())
+
+        # 订单统计
+        total_orders = 0
+        try:
+            orders = db_manager.get_all_orders()
+            total_orders = len(orders) if orders else 0
+        except:
+            pass
+
+        stats = {
+            "total_users": total_users,
+            "total_cookies": total_cookies,
+            "active_cookies": active_cookies,
+            "total_cards": total_cards,
+            "total_keywords": total_keywords,
+            "total_orders": total_orders
+        }
+
+        log_with_user('info', f"系统统计信息查询完成: {stats}", admin_user)
         return stats
 
     except Exception as e:
@@ -5943,11 +6275,75 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
         all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
 
         log_with_user('info', f"用户订单查询成功，共 {len(all_orders)} 条记录", current_user)
-        return {"success": True, "data": all_orders}
+        return {"success": True, "data": all_orders, "total": len(all_orders)}
 
     except Exception as e:
         log_with_user('error', f"查询用户订单失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=f"查询订单失败: {str(e)}")
+
+
+@app.get('/api/orders/{order_id}')
+def get_order_detail(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取订单详情"""
+    try:
+        from db_manager import db_manager
+
+        user_id = current_user['user_id']
+        log_with_user('info', f"查询订单详情: {order_id}", current_user)
+
+        # 获取用户的所有Cookie
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        # 在用户的订单中查找
+        for cookie_id in user_cookies.keys():
+            order = db_manager.get_order_by_id(order_id)
+            if order and order.get('cookie_id') == cookie_id:
+                log_with_user('info', f"订单详情查询成功: {order_id}", current_user)
+                return {"success": True, "data": order}
+
+        log_with_user('warning', f"订单不存在或无权访问: {order_id}", current_user)
+        raise HTTPException(status_code=404, detail="订单不存在或无权访问")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"查询订单详情失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=f"查询订单详情失败: {str(e)}")
+
+
+@app.delete('/api/orders/{order_id}')
+def delete_order(order_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """删除订单"""
+    try:
+        from db_manager import db_manager
+
+        user_id = current_user['user_id']
+        log_with_user('info', f"删除订单: {order_id}", current_user)
+
+        # 获取用户的所有Cookie
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        # 验证订单属于当前用户
+        order = db_manager.get_order_by_id(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="订单不存在")
+        
+        if order.get('cookie_id') not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权删除此订单")
+
+        # 删除订单
+        success = db_manager.delete_order(order_id)
+        if success:
+            log_with_user('info', f"订单删除成功: {order_id}", current_user)
+            return {"success": True, "message": "删除成功"}
+        else:
+            raise HTTPException(status_code=500, detail="删除失败")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_with_user('error', f"删除订单失败: {str(e)}", current_user)
+        raise HTTPException(status_code=500, detail=f"删除订单失败: {str(e)}")
 
 
 # ==================== 前端 SPA Catch-All 路由 ====================
@@ -5956,7 +6352,7 @@ def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
 # 然后由 React Router 在客户端处理路由
 
 # 定义不需要返回前端页面的路径前缀（API 路径）
-API_PREFIXES = ['/api/', '/static/', '/health', '/login', '/logout', '/register', '/verify']
+API_PREFIXES = ['/api/', '/static/', '/health', '/login', '/logout', '/register', '/verify', '/check-default-password', '/change-password', '/change-admin-password']
 
 @app.get('/{path:path}', response_class=HTMLResponse)
 async def catch_all_route(path: str):

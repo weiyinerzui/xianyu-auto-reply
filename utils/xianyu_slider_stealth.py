@@ -297,10 +297,10 @@ class XianyuSliderStealth:
         self.last_trajectory_params = {}
     
     def _check_date_validity(self) -> bool:
-        """检查日期有效性
+        """检查日期有效性 - 已禁用
         
         Returns:
-            bool: 如果当前日期小于 2025-11-30 返回 True，否则返回 False
+            bool: 始终返回 True
         """
         try:
             # 设置截止日期

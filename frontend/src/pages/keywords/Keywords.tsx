@@ -4,11 +4,12 @@ import { motion } from 'framer-motion'
 import { MessageSquare, RefreshCw, Plus, Edit2, Trash2, Upload, Download, Info, Image } from 'lucide-react'
 import { getKeywords, deleteKeyword, addKeyword, updateKeyword, exportKeywords, importKeywords as importKeywordsApi, addImageKeyword } from '@/api/keywords'
 import { getAccounts } from '@/api/accounts'
+import { getItems } from '@/api/items'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
 import { Select } from '@/components/common/Select'
-import type { Keyword, Account } from '@/types'
+import type { Keyword, Account, Item } from '@/types'
 
 export function Keywords() {
   const { addToast } = useUIStore()
@@ -16,13 +17,13 @@ export function Keywords() {
   const [loading, setLoading] = useState(true)
   const [keywords, setKeywords] = useState<Keyword[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [items, setItems] = useState<Item[]>([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingKeyword, setEditingKeyword] = useState<Keyword | null>(null)
   const [keywordText, setKeywordText] = useState('')
   const [replyText, setReplyText] = useState('')
   const [itemIdText, setItemIdText] = useState('')  // 绑定的商品ID
-  const [fuzzyMatch, setFuzzyMatch] = useState(false)
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -36,6 +37,10 @@ export function Keywords() {
   const [imagePreview, setImagePreview] = useState<string>('')
   const [savingImage, setSavingImage] = useState(false)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
+
+  // 图片预览弹窗状态
+  const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false)
+  const [previewImageUrl, setPreviewImageUrl] = useState('')
 
   const loadKeywords = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -90,8 +95,22 @@ export function Keywords() {
     if (!_hasHydrated || !isAuthenticated || !token) return
     if (selectedAccount) {
       loadKeywords()
+      loadItems()
     }
   }, [_hasHydrated, isAuthenticated, token, selectedAccount])
+
+  const loadItems = async () => {
+    if (!selectedAccount) {
+      setItems([])
+      return
+    }
+    try {
+      const result = await getItems(selectedAccount)
+      setItems(result.data || [])
+    } catch {
+      setItems([])
+    }
+  }
 
   const openAddModal = () => {
     if (!selectedAccount) {
@@ -102,16 +121,20 @@ export function Keywords() {
     setKeywordText('')
     setReplyText('')
     setItemIdText('')
-    setFuzzyMatch(false)
     setIsModalOpen(true)
   }
 
   const openEditModal = (keyword: Keyword) => {
+    // 图片关键词不支持编辑
+    if (keyword.type === 'image') {
+      addToast({ type: 'warning', message: '图片关键词不支持编辑，请删除后重新添加' })
+      return
+    }
+
     setEditingKeyword(keyword)
     setKeywordText(keyword.keyword)
     setReplyText(keyword.reply)
     setItemIdText(keyword.item_id || '')
-    setFuzzyMatch(!!keyword.fuzzy_match)
     setIsModalOpen(true)
   }
 
@@ -217,15 +240,18 @@ export function Keywords() {
     try {
       setImporting(true)
       const result = await importKeywordsApi(selectedAccount, file)
-      if (result.success) {
-        const info = (result.data as { added?: number; updated?: number } | undefined) || {}
+      // 后端返回 { msg, total, added, updated } 格式
+      const resultData = result as unknown as { msg?: string; added?: number; updated?: number; success?: boolean; message?: string }
+      if (resultData.msg || resultData.added !== undefined) {
         addToast({
           type: 'success',
-          message: `导入成功：新增 ${info.added ?? 0} 条，更新 ${info.updated ?? 0} 条`,
+          message: `导入成功：新增 ${resultData.added ?? 0} 条，更新 ${resultData.updated ?? 0} 条`,
         })
         await loadKeywords()
+      } else if (resultData.success === false) {
+        addToast({ type: 'error', message: resultData.message || '导入失败' })
       } else {
-        addToast({ type: 'error', message: result.message || '导入失败' })
+        addToast({ type: 'error', message: '导入失败' })
       }
     } catch {
       addToast({ type: 'error', message: '导入关键词失败' })
@@ -491,9 +517,21 @@ export function Keywords() {
                       )}
                     </td>
                     <td className="max-w-[300px]">
-                      <p className="truncate text-slate-600 dark:text-slate-300" title={keyword.reply}>
-                        {keyword.reply || <span className="text-gray-400">不回复</span>}
-                      </p>
+                      {keyword.type === 'image' ? (
+                        <button
+                          onClick={() => {
+                            setPreviewImageUrl(keyword.image_url || '')
+                            setIsImagePreviewOpen(true)
+                          }}
+                          className="text-blue-600 dark:text-blue-400 hover:underline text-sm"
+                        >
+                          查看大图
+                        </button>
+                      ) : (
+                        <p className="truncate text-slate-600 dark:text-slate-300" title={keyword.reply}>
+                          {keyword.reply || <span className="text-gray-400">不回复</span>}
+                        </p>
+                      )}
                     </td>
                     <td>
                       {keyword.type === 'image' ? (
@@ -568,13 +606,18 @@ export function Keywords() {
                 </div>
                 <div>
                   <label className="input-label">商品ID（可选）</label>
-                  <input
-                    type="text"
+                  <select
                     value={itemIdText}
                     onChange={(e) => setItemIdText(e.target.value)}
                     className="input-ios"
-                    placeholder="留空表示通用关键词，填写则仅对该商品生效"
-                  />
+                  >
+                    <option value="">通用关键词（所有商品）</option>
+                    {items.map((item) => (
+                      <option key={item.item_id} value={item.item_id}>
+                        {item.item_id} - {item.title || item.item_title || '未命名商品'}
+                      </option>
+                    ))}
+                  </select>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                     绑定商品ID后，此关键词仅在该商品对话中生效
                   </p>
@@ -698,13 +741,18 @@ export function Keywords() {
                 {/* 关联商品 */}
                 <div>
                   <label className="input-label">关联商品（可选）</label>
-                  <input
-                    type="text"
+                  <select
                     value={imageItemId}
                     onChange={(e) => setImageItemId(e.target.value)}
                     className="input-ios"
-                    placeholder="留空表示通用关键词"
-                  />
+                  >
+                    <option value="">通用关键词（所有商品）</option>
+                    {items.map((item) => (
+                      <option key={item.item_id} value={item.item_id}>
+                        {item.item_id} - {item.title || item.item_title || '未命名商品'}
+                      </option>
+                    ))}
+                  </select>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">填写商品ID后，此关键词仅在该商品对话中生效</p>
                 </div>
 
@@ -741,6 +789,28 @@ export function Keywords() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 图片预览弹窗 */}
+      {isImagePreviewOpen && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          onClick={() => setIsImagePreviewOpen(false)}
+        >
+          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setIsImagePreviewOpen(false)}
+              className="absolute -top-10 right-0 text-white hover:text-gray-300 text-sm"
+            >
+              关闭 ✕
+            </button>
+            <img
+              src={previewImageUrl}
+              alt="关键词图片"
+              className="max-w-full max-h-[90vh] object-contain rounded-lg"
+            />
           </div>
         </div>
       )}

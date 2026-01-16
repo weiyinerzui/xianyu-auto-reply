@@ -24,6 +24,9 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     auto_confirm: boolean
     remark?: string
     pause_duration?: number
+    username?: string
+    login_password?: string
+    show_browser?: boolean
   }
   const data = await get<BackendAccountDetail[]>('/cookies/details')
   // 后端返回 value 字段，前端使用 cookie 字段
@@ -34,6 +37,9 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     auto_confirm: item.auto_confirm,
     note: item.remark,
     pause_duration: item.pause_duration,
+    username: item.username,
+    login_password: item.login_password,
+    show_browser: item.show_browser,
     use_ai_reply: false,
     use_default_reply: false,
   }))
@@ -68,6 +74,15 @@ export const updateAccountAutoConfirm = (id: string, autoConfirm: boolean): Prom
 // 更新账号暂停时间
 export const updateAccountPauseDuration = (id: string, pauseDuration: number): Promise<ApiResponse> => {
   return put(`/cookies/${id}/pause-duration`, { pause_duration: pauseDuration })
+}
+
+// 更新账号登录信息（用户名、密码、是否显示浏览器）
+export const updateAccountLoginInfo = (id: string, data: {
+  username?: string
+  login_password?: string
+  show_browser?: boolean
+}): Promise<ApiResponse> => {
+  return put(`/cookies/${id}/login-info`, data)
 }
 
 // 删除账号

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CheckSquare, Download, Edit2, ExternalLink, FileText, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -19,7 +19,6 @@ export function Items() {
   const [searchKeyword, setSearchKeyword] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string | number>>(new Set())
   const [fetching, setFetching] = useState(false)
-  const [fetchProgress, setFetchProgress] = useState({ current: 0, total: 0 })
 
   // 编辑弹窗状态
   const [editingItem, setEditingItem] = useState<Item | null>(null)
@@ -53,37 +52,23 @@ export function Items() {
     }
 
     setFetching(true)
-    setFetchProgress({ current: 0, total: 0 })
 
     try {
-      let page = 1
-      let hasMore = true
-      let totalFetched = 0
+      // 使用获取所有页的接口，后端会自动遍历所有页
+      const result = await fetchAllItemsFromAccount(selectedAccount)
 
-      while (hasMore) {
-        setFetchProgress({ current: page, total: page })
-        const result = await fetchItemsFromAccount(selectedAccount, page)
-
-        if (result.success) {
-          const fetchedCount = (result as { count?: number }).count || 0
-          totalFetched += fetchedCount
-          hasMore = (result as { has_more?: boolean }).has_more === true
-          page++
-        } else {
-          hasMore = false
-        }
-
-        // 防止无限循环，最多抓取20页
-        if (page > 20) hasMore = false
+      if (result.success) {
+        const totalCount = (result as { total_count?: number }).total_count || 0
+        const savedCount = (result as { saved_count?: number }).saved_count || 0
+        addToast({ type: 'success', message: `成功获取商品，共 ${totalCount} 件，保存 ${savedCount} 件` })
+        await loadItems()
+      } else {
+        addToast({ type: 'error', message: (result as { message?: string }).message || '获取商品失败' })
       }
-
-      addToast({ type: 'success', message: `成功获取商品，共 ${totalFetched} 件` })
-      await loadItems()
     } catch {
       addToast({ type: 'error', message: '获取商品失败' })
     } finally {
       setFetching(false)
-      setFetchProgress({ current: 0, total: 0 })
     }
   }
 
@@ -249,7 +234,7 @@ export function Items() {
             {fetching ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                抓取中 (第{fetchProgress.current}页)
+                获取中...
               </>
             ) : (
               <>
@@ -397,8 +382,8 @@ export function Items() {
                       <button
                         onClick={() => handleToggleMultiSpec(item)}
                         className={`px-2 py-1 rounded text-xs font-medium transition-colors ${(item.is_multi_spec || item.has_sku)
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
-                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
                           }`}
                         title={(item.is_multi_spec || item.has_sku) ? '点击关闭多规格' : '点击开启多规格'}
                       >
@@ -409,8 +394,8 @@ export function Items() {
                       <button
                         onClick={() => handleToggleMultiQuantity(item)}
                         className={`px-2 py-1 rounded text-xs font-medium transition-colors ${item.multi_quantity_delivery
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
-                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400'
                           }`}
                         title={item.multi_quantity_delivery ? '点击关闭多数量发货' : '点击开启多数量发货'}
                       >

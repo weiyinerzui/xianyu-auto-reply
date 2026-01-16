@@ -99,26 +99,36 @@ export const batchDeleteKeywords = (cookieId: string, keywordIds: string[]): Pro
 }
 
 // 获取默认回复
-export const getDefaultReply = (cookieId: string): Promise<{ default_reply: string }> => {
+export const getDefaultReply = (cookieId: string): Promise<{ enabled?: boolean; reply_content?: string; reply_once?: boolean; reply_image_url?: string }> => {
   return get(`/default-reply/${cookieId}`)
 }
 
 // 更新默认回复
-export const updateDefaultReply = (cookieId: string, defaultReply: string): Promise<ApiResponse> => {
+export const updateDefaultReply = (cookieId: string, replyContent: string, enabled: boolean = true, replyOnce: boolean = false, replyImageUrl: string = ''): Promise<ApiResponse> => {
   return put(`/default-reply/${cookieId}`, {
-    enabled: true,  // 默认启用
-    reply_content: defaultReply,
-    reply_once: false  // 默认每次都回复
+    enabled,
+    reply_content: replyContent,
+    reply_once: replyOnce,
+    reply_image_url: replyImageUrl
   })
 }
 
 // 导出关键词（Excel/模板），返回 Blob 供前端触发下载
-export const exportKeywords = (cookieId: string): Promise<Blob> => {
-  return get<Blob>(`/keywords-export/${cookieId}`, { responseType: 'blob' })
+export const exportKeywords = async (cookieId: string): Promise<Blob> => {
+  const token = localStorage.getItem('auth_token')
+  const response = await fetch(`/keywords-export/${cookieId}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  })
+  if (!response.ok) {
+    throw new Error('导出失败')
+  }
+  return response.blob()
 }
 
 // 导入关键词（Excel），上传文件并返回导入结果
-export const importKeywords = (
+export const importKeywords = async (
   cookieId: string,
   file: File
 ): Promise<ApiResponse<{ added: number; updated: number }>> => {
@@ -130,7 +140,7 @@ export const importKeywords = (
 }
 
 // 添加图片关键词
-export const addImageKeyword = (
+export const addImageKeyword = async (
   cookieId: string,
   keyword: string,
   image: File,

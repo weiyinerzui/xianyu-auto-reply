@@ -24,7 +24,7 @@ function compareVersions(v1: string, v2: string): number {
 
 export function About() {
   const [previewImage, setPreviewImage] = useState<string | null>(null)
-  const [version, setVersion] = useState('v1.0.4')
+  const [version, setVersion] = useState('加载中...')
   const [totalUsers, setTotalUsers] = useState(0)
 
   // 更新检查相关状态
@@ -35,13 +35,14 @@ export function About() {
   const [showUpdateModal, setShowUpdateModal] = useState(false)
   const [showChangelogModal, setShowChangelogModal] = useState(false)
   const [changelog, setChangelog] = useState<UpdateInfo[]>([])
+  const [changelogHtml, setChangelogHtml] = useState<string | null>(null)
   const [loadingChangelog, setLoadingChangelog] = useState(false)
 
   // 检查更新
   const checkForUpdate = useCallback(async (showToast = false) => {
     setCheckingUpdate(true)
     try {
-      const response = await fetch('https://xianyu.zhinianblog.cn/index.php?action=getVersion')
+      const response = await fetch('/api/version/check')
       const result = await response.json()
 
       if (result.error) {
@@ -51,7 +52,8 @@ export function About() {
         return
       }
 
-      const remoteVersion = result.version || result.latest_version
+      // 支持 {data: "v1.0.5"} 格式
+      const remoteVersion = result.data || result.version || result.latest_version
       if (remoteVersion) {
         setLatestVersion(remoteVersion)
         setUpdateInfo({
@@ -81,13 +83,27 @@ export function About() {
   // 获取更新日志
   const loadChangelog = useCallback(async () => {
     setLoadingChangelog(true)
+    setChangelogHtml(null)
+    setChangelog([])
     try {
-      const response = await fetch('https://xianyu.zhinianblog.cn/index.php?action=getChangelog')
+      const response = await fetch('/api/version/changelog')
       const result = await response.json()
 
-      if (!result.error && result.changelog) {
+      if (result.error) {
+        console.error('获取更新日志失败:', result.message)
+        return
+      }
+
+      // 支持 {data: {updates: [...]}} 格式
+      if (result.data && result.data.updates && Array.isArray(result.data.updates)) {
+        // 将 updates 数组合并成 HTML 字符串
+        const htmlContent = result.data.updates.join('<br/>')
+        setChangelogHtml(htmlContent)
+      } else if (result.html) {
+        setChangelogHtml(result.html)
+      } else if (result.changelog) {
         setChangelog(result.changelog)
-      } else if (!result.error && Array.isArray(result)) {
+      } else if (Array.isArray(result)) {
         setChangelog(result)
       }
     } catch (error) {
@@ -459,6 +475,11 @@ export function About() {
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
                 </div>
+              ) : changelogHtml ? (
+                <div 
+                  className="changelog-html prose prose-sm dark:prose-invert max-w-none"
+                  dangerouslySetInnerHTML={{ __html: changelogHtml }}
+                />
               ) : changelog.length === 0 ? (
                 <div className="text-center py-12 text-slate-500 dark:text-slate-400">
                   <FileText className="w-12 h-12 mx-auto mb-3 text-slate-300 dark:text-slate-600" />

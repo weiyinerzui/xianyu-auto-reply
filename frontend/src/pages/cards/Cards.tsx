@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent, ChangeEvent } from 'react'
-import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2 } from 'lucide-react'
+import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image } from 'lucide-react'
 import { getCards, deleteCard, createCard, updateCard, type CardData } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -109,6 +109,10 @@ export function Cards() {
   const [submitting, setSubmitting] = useState(false)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // 图片预览弹窗状态
+  const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false)
+  const [previewImageUrl, setPreviewImageUrl] = useState('')
 
   const loadCards = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -418,9 +422,29 @@ export function Cards() {
                       </span>
                     </td>
                     <td>
-                      <code className="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded max-w-[200px] truncate block">
-                        {card.text_content || card.data_content?.split('\n')[0] || card.api_config?.url || card.image_url || '-'}
-                      </code>
+                      {card.type === 'image' ? (
+                        card.image_url ? (
+                          <button
+                            onClick={() => {
+                              setPreviewImageUrl(card.image_url || '')
+                              setIsImagePreviewOpen(true)
+                            }}
+                            className="px-2 py-1 text-xs font-medium bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 rounded transition-colors flex items-center gap-1"
+                          >
+                            <Image className="w-3 h-3" />
+                            查看原图
+                          </button>
+                        ) : (
+                          <span className="text-gray-400 text-sm">暂无图片</span>
+                        )
+                      ) : (
+                        <code className="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded max-w-[200px] truncate block">
+                          {card.type === 'text' && (card.text_content || '-')}
+                          {card.type === 'data' && (card.data_content ? `剩余 ${card.data_content.split('\n').filter((line: string) => line.trim()).length} 条` : '-')}
+                          {card.type === 'api' && (card.api_config?.url || '-')}
+                          {!['text', 'data', 'api', 'image'].includes(card.type) && '-'}
+                        </code>
+                      )}
                     </td>
                     <td>{card.delay_seconds || 0}秒</td>
                     <td>
@@ -745,6 +769,30 @@ export function Cards() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 图片预览弹窗 */}
+      {isImagePreviewOpen && (
+        <div className="modal-overlay" style={{ zIndex: 70 }} onClick={() => setIsImagePreviewOpen(false)}>
+          <div className="modal-content max-w-4xl p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">图片预览</h3>
+              <button
+                onClick={() => setIsImagePreviewOpen(false)}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex justify-center">
+              <img
+                src={previewImageUrl}
+                alt="预览"
+                className="max-w-full max-h-[70vh] object-contain rounded-lg"
+              />
+            </div>
           </div>
         </div>
       )}

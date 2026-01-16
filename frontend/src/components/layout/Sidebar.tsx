@@ -11,7 +11,6 @@ import {
   Truck,
   Bell,
   MessageCircle,
-  Search,
   Settings,
   UserCog,
   FileText,
@@ -22,6 +21,7 @@ import {
   X,
   PanelLeftClose,
   PanelLeft,
+  AlertTriangle,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
@@ -45,7 +45,7 @@ const mainNavItems: NavItem[] = [
   { icon: Truck, label: '自动发货', path: '/delivery' },
   { icon: Bell, label: '通知渠道', path: '/notification-channels' },
   { icon: MessageCircle, label: '消息通知', path: '/message-notifications' },
-  { icon: Search, label: '商品搜索', path: '/item-search' },
+  // { icon: Search, label: '商品搜索', path: '/item-search' },
   { icon: Settings, label: '系统设置', path: '/settings' },
 ]
 
@@ -57,6 +57,7 @@ const adminNavItems: NavItem[] = [
 ]
 
 const bottomNavItems: NavItem[] = [
+  { icon: AlertTriangle, label: '免责声明', path: '/disclaimer' },
   { icon: Info, label: '关于', path: '/about' },
 ]
 

@@ -730,68 +730,9 @@ def patch_check_date_validity():
         
         def new_check_date_validity(self) -> bool:
             """
-            新的日期有效性检查方法
-            支持通过环境变量 SLIDER_VALIDITY_DAYS 自定义剩余使用天数
+            新的日期有效性检查方法 - 已禁用，始终返回 True
             """
-            try:
-                # 从环境变量读取最大使用天数，默认30天
-                import os
-                max_days = int(os.getenv('SLIDER_VALIDITY_DAYS', '30'))
-                
-                # 获取轨迹历史目录
-                trajectory_history_dir = os.path.join(os.getcwd(), 'trajectory_history')
-                history_file = os.path.join(trajectory_history_dir, f"{self.user_id}_history.json")
-                
-                if not os.path.exists(history_file):
-                    # 文件不存在，认为有效
-                    logger.debug(f"【{self.user_id}】历史记录文件不存在，日期验证通过")
-                    return True
-                
-                # 检查文件修改时间
-                file_mtime = os.path.getmtime(history_file)
-                file_date = datetime.fromtimestamp(file_mtime)
-                now = datetime.now()
-                days_diff = (now - file_date).days
-                remaining_days = max_days - days_diff
-                
-                # 如果文件超过最大天数未更新，认为过期
-                if days_diff > max_days:
-                    logger.warning(f"【{self.user_id}】日期验证失败，已超过最大使用天数 {max_days} 天（实际: {days_diff} 天）")
-                    return False
-                
-                # 检查文件内容中的时间戳
-                import json
-                try:
-                    with open(history_file, 'r', encoding='utf-8') as f:
-                        history = json.load(f)
-                    
-                    if history:
-                        # 获取最新的记录时间戳
-                        latest_timestamp = max(h.get('timestamp', 0) for h in history if isinstance(h, dict))
-                        if latest_timestamp > 0:
-                            latest_date = datetime.fromtimestamp(latest_timestamp)
-                            days_diff = (now - latest_date).days
-                            remaining_days = max_days - days_diff
-                            
-                            if days_diff > max_days:
-                                logger.warning(f"【{self.user_id}】日期验证失败，学习数据记录已超过最大使用天数 {max_days} 天（实际: {days_diff} 天）")
-                                return False
-                            
-                            logger.info(f"【{self.user_id}】日期验证通过，剩余可用天数: {remaining_days} 天")
-                            return True
-                except (json.JSONDecodeError, ValueError, KeyError) as e:
-                    logger.warning(f"【{self.user_id}】读取历史记录文件失败: {e}，使用文件修改时间判断")
-                
-                # 使用文件修改时间判断
-                logger.info(f"【{self.user_id}】日期验证通过，剩余可用天数: {remaining_days} 天")
-                return True
-                
-            except Exception as e:
-                logger.error(f"【{self.user_id}】日期有效性检查异常: {e}")
-                import traceback
-                traceback.print_exc()
-                # 异常时返回 True，允许继续使用
-                return True
+            return True
         
         # 替换方法
         XianyuSliderStealth._check_date_validity = new_check_date_validity

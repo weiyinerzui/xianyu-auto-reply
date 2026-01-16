@@ -240,11 +240,21 @@ class DBManager:
                 amount TEXT,
                 order_status TEXT DEFAULT 'unknown',
                 cookie_id TEXT,
+                is_bargain INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
             )
             ''')
+
+            # 检查并添加 is_bargain 列（用于标记小刀订单）
+            try:
+                self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")
+            except sqlite3.OperationalError:
+                # is_bargain 列不存在，需要添加
+                logger.info("正在为 orders 表添加 is_bargain 列...")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN is_bargain INTEGER DEFAULT 0")
+                logger.info("orders 表 is_bargain 列添加完成")
 
             # 检查并添加 user_id 列（用于数据库迁移）
             try:
@@ -326,6 +336,7 @@ class DBManager:
                 cookie_id TEXT PRIMARY KEY,
                 enabled BOOLEAN DEFAULT FALSE,
                 reply_content TEXT,
+                reply_image_url TEXT,
                 reply_once BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -341,6 +352,15 @@ class DBManager:
             except sqlite3.OperationalError as e:
                 if "duplicate column name" not in str(e).lower():
                     logger.warning(f"添加 reply_once 字段失败: {e}")
+
+            # 添加 reply_image_url 字段（如果不存在）
+            try:
+                cursor.execute('ALTER TABLE default_replies ADD COLUMN reply_image_url TEXT')
+                self.conn.commit()
+                logger.info("已添加 reply_image_url 字段到 default_replies 表")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning(f"添加 reply_image_url 字段失败: {e}")
 
             # 创建指定商品回复表
             cursor.execute('''
@@ -441,6 +461,7 @@ class DBManager:
             ('theme_color', 'blue', '主题颜色'),
             ('registration_enabled', 'true', '是否开启用户注册'),
             ('show_default_login_info', 'true', '是否显示默认登录信息'),
+            ('login_captcha_enabled', 'true', '登录滑动验证码开关'),
             ('smtp_server', '', 'SMTP服务器地址'),
             ('smtp_port', '587', 'SMTP端口'),
             ('smtp_user', '', 'SMTP登录用户名（发件邮箱）'),
@@ -735,6 +756,14 @@ class DBManager:
                     # 多数量发货字段不存在，需要添加
                     self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                     logger.info("为item_info表添加多数量发货字段")
+
+                # 检查orders表是否有is_bargain字段
+                try:
+                    self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")
+                except sqlite3.OperationalError:
+                    # is_bargain字段不存在，需要添加
+                    self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN is_bargain INTEGER DEFAULT 0")
+                    logger.info("为orders表添加is_bargain字段")
 
                 # 处理keywords表的唯一约束问题
                 # 由于SQLite不支持直接修改约束，我们需要重建表
@@ -1909,6 +1938,10 @@ class DBManager:
         优先使用账号级别的设置，如果账号没有配置api_key/base_url/model_name，
         则从系统设置中读取全局AI配置作为默认值
         """
+        # 默认值常量，用于判断是否使用系统设置
+        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+        DEFAULT_MODEL = 'qwen-plus'
+        
         with self.lock:
             try:
                 cursor = self.conn.cursor()
@@ -1923,29 +1956,25 @@ class DBManager:
                 
                 # 获取系统级别的AI设置作为默认值
                 system_api_key = self.get_system_setting('ai_api_key') or ''
-                system_base_url = self.get_system_setting('ai_api_url') or 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-                system_model = self.get_system_setting('ai_model') or 'qwen-plus'
+                system_base_url = self.get_system_setting('ai_api_url') or DEFAULT_BASE_URL
+                system_model = self.get_system_setting('ai_model') or DEFAULT_MODEL
                 
                 if result:
-                    # 调试：打印数据库中的原始值，帮助排查配置问题
-                    logger.info(f"【AI设置调试】账号 {cookie_id} 数据库原始值: "
-                                f"model_name='{result[1]}', api_key='{result[2][-6:] if result[2] else 'NULL'}', "
-                                f"base_url='{result[3]}'")
+                    # 账号有设置，但如果api_key/base_url/model_name为空或等于默认值，使用系统设置
+                    account_model = result[1]
+                    account_api_key = result[2]
+                    account_base_url = result[3]
                     
-                    # 判断是否使用回退值
-                    using_fallback = []
-                    if not result[1]: using_fallback.append('model_name')
-                    if not result[2]: using_fallback.append('api_key')
-                    if not result[3]: using_fallback.append('base_url')
-                    if using_fallback:
-                        logger.warning(f"【AI设置调试】账号 {cookie_id} 以下字段使用系统默认值: {using_fallback}")
+                    # 如果账号值为空或等于硬编码默认值，则使用系统设置
+                    use_model = account_model if (account_model and account_model != DEFAULT_MODEL) else system_model
+                    use_api_key = account_api_key if account_api_key else system_api_key
+                    use_base_url = account_base_url if (account_base_url and account_base_url != DEFAULT_BASE_URL) else system_base_url
                     
-                    # 账号有设置，但如果api_key/base_url/model_name为空，使用系统设置
                     return {
                         'ai_enabled': bool(result[0]),
-                        'model_name': result[1].strip() if result[1] else system_model,
-                        'api_key': result[2].strip() if result[2] else system_api_key,
-                        'base_url': result[3].strip() if result[3] else system_base_url,
+                        'model_name': use_model,
+                        'api_key': use_api_key,
+                        'base_url': use_base_url,
                         'max_discount_percent': result[4],
                         'max_discount_amount': result[5],
                         'max_bargain_rounds': result[6],
@@ -2008,17 +2037,17 @@ class DBManager:
                 return {}
 
     # -------------------- 默认回复操作 --------------------
-    def save_default_reply(self, cookie_id: str, enabled: bool, reply_content: str = None, reply_once: bool = False):
+    def save_default_reply(self, cookie_id: str, enabled: bool, reply_content: str = None, reply_once: bool = False, reply_image_url: str = None):
         """保存默认回复设置"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                INSERT OR REPLACE INTO default_replies (cookie_id, enabled, reply_content, reply_once, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (cookie_id, enabled, reply_content, reply_once))
+                INSERT OR REPLACE INTO default_replies (cookie_id, enabled, reply_content, reply_image_url, reply_once, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (cookie_id, enabled, reply_content, reply_image_url, reply_once))
                 self.conn.commit()
-                logger.debug(f"保存默认回复设置: {cookie_id} -> {'启用' if enabled else '禁用'}, 只回复一次: {'是' if reply_once else '否'}")
+                logger.debug(f"保存默认回复设置: {cookie_id} -> {'启用' if enabled else '禁用'}, 只回复一次: {'是' if reply_once else '否'}, 图片: {reply_image_url}")
             except Exception as e:
                 logger.error(f"保存默认回复设置失败: {e}")
                 raise
@@ -2029,15 +2058,16 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT enabled, reply_content, reply_once FROM default_replies WHERE cookie_id = ?
+                SELECT enabled, reply_content, reply_once, reply_image_url FROM default_replies WHERE cookie_id = ?
                 ''', (cookie_id,))
                 result = cursor.fetchone()
                 if result:
-                    enabled, reply_content, reply_once = result
+                    enabled, reply_content, reply_once, reply_image_url = result
                     return {
                         'enabled': bool(enabled),
                         'reply_content': reply_content or '',
-                        'reply_once': bool(reply_once) if reply_once is not None else False
+                        'reply_once': bool(reply_once) if reply_once is not None else False,
+                        'reply_image_url': reply_image_url or ''
                     }
                 return None
             except Exception as e:
@@ -2049,15 +2079,16 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                cursor.execute('SELECT cookie_id, enabled, reply_content, reply_once FROM default_replies')
+                cursor.execute('SELECT cookie_id, enabled, reply_content, reply_once, reply_image_url FROM default_replies')
 
                 result = {}
                 for row in cursor.fetchall():
-                    cookie_id, enabled, reply_content, reply_once = row
+                    cookie_id, enabled, reply_content, reply_once, reply_image_url = row
                     result[cookie_id] = {
                         'enabled': bool(enabled),
                         'reply_content': reply_content or '',
-                        'reply_once': bool(reply_once) if reply_once is not None else False
+                        'reply_once': bool(reply_once) if reply_once is not None else False,
+                        'reply_image_url': reply_image_url or ''
                     }
 
                 return result
@@ -2115,6 +2146,22 @@ class DBManager:
                 return True
             except Exception as e:
                 logger.error(f"删除默认回复设置失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def update_default_reply_image_url(self, cookie_id: str, new_image_url: str) -> bool:
+        """更新默认回复的图片URL（用于将本地图片URL更新为CDN URL）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE default_replies SET reply_image_url = ? WHERE cookie_id = ?
+                ''', (new_image_url, cookie_id))
+                self.conn.commit()
+                logger.debug(f"更新默认回复图片URL: {cookie_id} -> {new_image_url}")
+                return True
+            except Exception as e:
+                logger.error(f"更新默认回复图片URL失败: {e}")
                 self.conn.rollback()
                 return False
 
@@ -3337,7 +3384,8 @@ class DBManager:
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
                        c.text_content, c.data_content, c.image_url, c.enabled as card_enabled, c.description as card_description,
-                       c.delay_seconds as card_delay_seconds
+                       c.delay_seconds as card_delay_seconds,
+                       c.is_multi_spec, c.spec_name, c.spec_value
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
                 WHERE dr.enabled = 1 AND c.enabled = 1
@@ -3378,7 +3426,10 @@ class DBManager:
                         'image_url': row[12],
                         'card_enabled': bool(row[13]),
                         'card_description': row[14],  # 卡券备注信息
-                        'card_delay_seconds': row[15] or 0  # 延时秒数
+                        'card_delay_seconds': row[15] or 0,  # 延时秒数
+                        'is_multi_spec': bool(row[16]) if row[16] is not None else False,
+                        'spec_name': row[17],
+                        'spec_value': row[18]
                     })
 
                 return rules
@@ -4540,7 +4591,8 @@ class DBManager:
 
     def insert_or_update_order(self, order_id: str, item_id: str = None, buyer_id: str = None,
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
-                              amount: str = None, order_status: str = None, cookie_id: str = None):
+                              amount: str = None, order_status: str = None, cookie_id: str = None,
+                              is_bargain: bool = None):
         """插入或更新订单信息"""
         with self.lock:
             try:
@@ -4587,6 +4639,9 @@ class DBManager:
                     if cookie_id is not None:
                         update_fields.append("cookie_id = ?")
                         update_values.append(cookie_id)
+                    if is_bargain is not None:
+                        update_fields.append("is_bargain = ?")
+                        update_values.append(1 if is_bargain else 0)
 
                     if update_fields:
                         update_fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -4599,10 +4654,11 @@ class DBManager:
                     # 插入新订单
                     cursor.execute('''
                     INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
-                                      quantity, amount, order_status, cookie_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      quantity, amount, order_status, cookie_id, is_bargain)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (order_id, item_id, buyer_id, spec_name, spec_value,
-                          quantity, amount, order_status or 'unknown', cookie_id))
+                          quantity, amount, order_status or 'unknown', cookie_id,
+                          1 if is_bargain else 0))
                     logger.info(f"插入新订单: {order_id}")
 
                 self.conn.commit()
@@ -4661,13 +4717,14 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, created_at, updated_at
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
                 row = cursor.fetchone()
                 if row:
                     return {
+                        'id': row[0],  # 使用 order_id 作为 id
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
@@ -4675,16 +4732,33 @@ class DBManager:
                         'spec_value': row[4],
                         'quantity': row[5],
                         'amount': row[6],
-                        'order_status': row[7],
+                        'status': row[7],
                         'cookie_id': row[8],
-                        'created_at': row[9],
-                        'updated_at': row[10]
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11]
                     }
                 return None
 
             except Exception as e:
                 logger.error(f"获取订单信息失败: {order_id} - {e}")
                 return None
+
+    def delete_order(self, order_id: str):
+        """删除订单"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('DELETE FROM orders WHERE order_id = ?', (order_id,))
+                if cursor.rowcount > 0:
+                    self.conn.commit()
+                    logger.info(f"删除订单成功: {order_id}")
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"删除订单失败: {order_id} - {e}")
+                self.conn.rollback()
+                return False
 
     def get_orders_by_cookie(self, cookie_id: str, limit: int = 100):
         """根据Cookie ID获取订单列表"""
@@ -4693,7 +4767,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, spec_name, spec_value,
-                       quantity, amount, order_status, created_at, updated_at
+                       quantity, amount, order_status, is_bargain, created_at, updated_at
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
                 ''', (cookie_id, limit))
@@ -4701,6 +4775,7 @@ class DBManager:
                 orders = []
                 for row in cursor.fetchall():
                     orders.append({
+                        'id': row[0],  # 使用 order_id 作为 id
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
@@ -4708,15 +4783,52 @@ class DBManager:
                         'spec_value': row[4],
                         'quantity': row[5],
                         'amount': row[6],
-                        'order_status': row[7],
-                        'created_at': row[8],
-                        'updated_at': row[9]
+                        'status': row[7],
+                        'is_bargain': bool(row[8]) if row[8] is not None else False,
+                        'created_at': row[9],
+                        'updated_at': row[10]
                     })
 
                 return orders
 
             except Exception as e:
                 logger.error(f"获取Cookie订单列表失败: {cookie_id} - {e}")
+                return []
+
+    def get_all_orders(self, limit: int = 1000):
+        """获取所有订单列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                FROM orders
+                ORDER BY created_at DESC LIMIT ?
+                ''', (limit,))
+
+                orders = []
+                for row in cursor.fetchall():
+                    orders.append({
+                        'id': row[0],
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'spec_name': row[3],
+                        'spec_value': row[4],
+                        'quantity': row[5],
+                        'amount': row[6],
+                        'status': row[7],
+                        'cookie_id': row[8],
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11]
+                    })
+
+                return orders
+
+            except Exception as e:
+                logger.error(f"获取所有订单列表失败: {e}")
                 return []
 
     def delete_table_record(self, table_name: str, record_id: str):

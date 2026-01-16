@@ -17,13 +17,25 @@ export const logout = (): Promise<ApiResponse> => {
 }
 
 // 获取注册状态
-export const getRegistrationStatus = (): Promise<{ enabled: boolean }> => {
-  return get('/registration-status')
+export const getRegistrationStatus = async (): Promise<{ enabled: boolean }> => {
+  try {
+    const settings = await get<Record<string, any>>('/system-settings/public')
+    const value = settings.registration_enabled
+    return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
+  } catch {
+    return { enabled: true }
+  }
 }
 
 // 获取登录信息显示状态
-export const getLoginInfoStatus = (): Promise<{ enabled: boolean }> => {
-  return get('/login-info-status')
+export const getLoginInfoStatus = async (): Promise<{ enabled: boolean }> => {
+  try {
+    const settings = await get<Record<string, any>>('/system-settings/public')
+    const value = settings.show_default_login_info
+    return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
+  } catch {
+    return { enabled: true }
+  }
 }
 
 // 生成图形验证码
@@ -50,4 +62,55 @@ export const register = (data: {
   session_id: string
 }): Promise<ApiResponse> => {
   return post('/register', data)
+}
+
+// ==================== 极验滑动验证码 ====================
+
+// 极验验证码初始化响应类型
+export interface GeetestRegisterResponse {
+  success: boolean
+  code: number
+  message: string
+  data?: {
+    success: number
+    gt: string
+    challenge: string
+    new_captcha: boolean
+  }
+}
+
+// 极验二次验证响应类型
+export interface GeetestValidateResponse {
+  success: boolean
+  code: number
+  message: string
+}
+
+// 获取极验验证码初始化参数
+export const getGeetestRegister = (): Promise<GeetestRegisterResponse> => {
+  return get('/geetest/register')
+}
+
+// 极验二次验证
+export const geetestValidate = (data: {
+  challenge: string
+  validate: string
+  seccode: string
+}): Promise<GeetestValidateResponse> => {
+  return post('/geetest/validate', data)
+}
+
+// 获取登录验证码开关状态
+export const getLoginCaptchaStatus = async (): Promise<{ enabled: boolean }> => {
+  try {
+    const settings = await get<Record<string, any>>('/system-settings/public')
+    const value = settings.login_captcha_enabled
+    // 如果没有设置，默认开启
+    if (value === undefined || value === null) {
+      return { enabled: true }
+    }
+    return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
+  } catch {
+    return { enabled: true }
+  }
 }

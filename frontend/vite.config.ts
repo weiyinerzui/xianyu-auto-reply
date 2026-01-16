@@ -89,6 +89,10 @@ export default defineConfig(({ command }) => ({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/geetest': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/register': {
         target: 'http://localhost:8080',
         changeOrigin: true,
@@ -135,6 +139,10 @@ export default defineConfig(({ command }) => ({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/upload-image': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/default-reply': {
         target: 'http://localhost:8080',
         changeOrigin: true,
@@ -156,6 +164,10 @@ export default defineConfig(({ command }) => ({
         changeOrigin: true,
       },
       '/change-admin-password': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/check-default-password': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

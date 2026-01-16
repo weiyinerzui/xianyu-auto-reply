@@ -10,7 +10,6 @@ import type { NotificationChannel } from '@/types'
 
 // 所有支持的渠道类型配置
 const channelTypes = [
-  { type: 'qq', label: 'QQ通知', desc: 'QQ机器人消息', icon: MessageCircle, placeholder: '{"qq_number": "123456789"}' },
   { type: 'dingtalk', label: '钉钉通知', desc: '钉钉机器人消息', icon: Bell, placeholder: '{"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=..."}' },
   { type: 'feishu', label: '飞书通知', desc: '飞书机器人消息', icon: Send, placeholder: '{"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/..."}' },
   { type: 'bark', label: 'Bark通知', desc: 'iOS推送通知', icon: Smartphone, placeholder: '{"device_key": "xxx", "server_url": "https://api.day.app"}' },
@@ -191,7 +190,6 @@ export function NotificationChannels() {
   // 获取当前类型的配置提示
   const getConfigHint = (type: ChannelType) => {
     switch (type) {
-      case 'qq': return '需要添加QQ号 3668943488 为好友才能正常接收消息通知'
       case 'bark': return 'Bark是iOS推送通知服务，需要填写设备密钥'
       case 'dingtalk': return '请设置钉钉机器人Webhook URL，可选填加签密钥'
       case 'feishu': return '请设置飞书机器人Webhook URL'

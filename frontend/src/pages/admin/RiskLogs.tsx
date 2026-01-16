@@ -55,9 +55,13 @@ export function RiskLogs() {
   const handleClear = async () => {
     if (!confirm('确定要清空所有风控日志吗？此操作不可恢复！')) return
     try {
-      await clearRiskLogs()
-      addToast({ type: 'success', message: '日志已清空' })
-      loadLogs()
+      const result = await clearRiskLogs()
+      if (result.success) {
+        addToast({ type: 'success', message: '日志已清空' })
+        loadLogs()
+      } else {
+        addToast({ type: 'error', message: result.message || '清空失败' })
+      }
     } catch {
       addToast({ type: 'error', message: '清空失败' })
     }
@@ -125,14 +129,18 @@ export function RiskLogs() {
               <tr>
                 <th>账号ID</th>
                 <th>风控类型</th>
-                <th>详情</th>
-                <th>时间</th>
+                <th>事件描述</th>
+                <th>处理结果</th>
+                <th>处理状态</th>
+                <th>错误信息</th>
+                <th>创建时间</th>
+                <th>更新时间</th>
               </tr>
             </thead>
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <td colSpan={8} className="text-center py-8 text-slate-500 dark:text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <ShieldAlert className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                       <p>暂无风控日志</p>
@@ -146,16 +154,48 @@ export function RiskLogs() {
                     <td>
                       <span className="badge-danger">{log.risk_type}</span>
                     </td>
-                    <td className="max-w-[300px] text-slate-500 dark:text-slate-400">
+                    <td className="max-w-[200px] text-slate-500 dark:text-slate-400">
                       <span 
                         className="block truncate cursor-help" 
                         title={log.message}
                       >
-                        {log.message}
+                        {log.message || '-'}
                       </span>
                     </td>
-                    <td className="text-slate-500 dark:text-slate-400 text-sm">
+                    <td className="max-w-[200px] text-slate-500 dark:text-slate-400">
+                      <span 
+                        className="block truncate cursor-help" 
+                        title={log.processing_result}
+                      >
+                        {log.processing_result || '-'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        log.processing_status === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                        log.processing_status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
+                        log.processing_status === 'processing' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                        'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                      }`}>
+                        {log.processing_status === 'success' ? '成功' :
+                         log.processing_status === 'failed' ? '失败' :
+                         log.processing_status === 'processing' ? '处理中' :
+                         log.processing_status || '-'}
+                      </span>
+                    </td>
+                    <td className="max-w-[150px] text-red-500 dark:text-red-400">
+                      <span 
+                        className="block truncate cursor-help" 
+                        title={log.error_message || ''}
+                      >
+                        {log.error_message || '-'}
+                      </span>
+                    </td>
+                    <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
                       {new Date(log.created_at).toLocaleString()}
+                    </td>
+                    <td className="text-slate-500 dark:text-slate-400 text-sm whitespace-nowrap">
+                      {log.updated_at ? new Date(log.updated_at).toLocaleString() : '-'}
                     </td>
                   </tr>
                 ))

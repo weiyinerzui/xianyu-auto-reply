@@ -64,7 +64,7 @@ export const getSystemLogs = async (params?: { page?: number; limit?: number; le
 
 // 清空系统日志
 export const clearSystemLogs = (): Promise<ApiResponse> => {
-  return post('/logs/clear')
+  return post('/admin/logs/clear')
 }
 
 // ========== 风控日志 ==========
@@ -74,7 +74,11 @@ export interface RiskLog {
   cookie_id: string
   risk_type: string
   message: string
+  processing_result: string
+  processing_status: string
+  error_message: string | null
   created_at: string
+  updated_at: string
 }
 
 // 获取风控日志
@@ -100,17 +104,20 @@ export const getRiskLogs = async (params?: { page?: number; limit?: number; cook
     id: String(item.id),
     cookie_id: item.cookie_id || item.cookie_name,
     risk_type: item.event_type,
-    message: item.event_description || item.processing_result,
+    message: item.event_description || '',
+    processing_result: item.processing_result || '',
+    processing_status: item.processing_status || '',
+    error_message: item.error_message,
     created_at: item.created_at,
+    updated_at: item.updated_at || '',
   }))
   return { success: true, data: logs, total: result.total }
 }
 
-// 清空风控日志 - 后端暂未实现批量删除接口
-export const clearRiskLogs = async (): Promise<ApiResponse> => {
-  // 后端只有单条删除接口 DELETE /risk-control-logs/{log_id}
-  // 暂时返回提示信息
-  return { success: false, message: '后端暂未实现批量清空风控日志接口' }
+// 清空风控日志
+export const clearRiskLogs = async (cookieId?: string): Promise<ApiResponse> => {
+  const query = cookieId ? `?cookie_id=${cookieId}` : ''
+  return del(`/admin/risk-control-logs${query}`)
 }
 
 // ========== 数据管理 ==========

@@ -22,7 +22,6 @@ export function Delivery() {
   const [editingRule, setEditingRule] = useState<DeliveryRule | null>(null)
   const [formKeyword, setFormKeyword] = useState('')
   const [formCardId, setFormCardId] = useState('')
-  const [formDeliveryCount, setFormDeliveryCount] = useState(1)
   const [formDescription, setFormDescription] = useState('')
   const [formEnabled, setFormEnabled] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -85,7 +84,6 @@ export function Delivery() {
     setEditingRule(null)
     setFormKeyword('')
     setFormCardId('')
-    setFormDeliveryCount(1)
     setFormDescription('')
     setFormEnabled(true)
     setIsModalOpen(true)
@@ -95,7 +93,6 @@ export function Delivery() {
     setEditingRule(rule)
     setFormKeyword(rule.keyword)
     setFormCardId(String(rule.card_id))
-    setFormDeliveryCount(rule.delivery_count)
     setFormDescription(rule.description || '')
     setFormEnabled(rule.enabled)
     setIsModalOpen(true)
@@ -122,7 +119,7 @@ export function Delivery() {
       const data = {
         keyword: formKeyword.trim(),
         card_id: Number(formCardId),
-        delivery_count: formDeliveryCount,
+        delivery_count: 1,  // 固定为1
         description: formDescription || undefined,
         enabled: formEnabled,
       }
@@ -189,7 +186,7 @@ export function Delivery() {
               <tr>
                 <th>触发关键词</th>
                 <th>关联卡券</th>
-                <th>发货数量</th>
+                <th>规格</th>
                 <th>已发次数</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -206,50 +203,62 @@ export function Delivery() {
                   </td>
                 </tr>
               ) : (
-                rules.map((rule) => (
-                  <tr key={rule.id}>
-                    <td className="font-medium text-blue-600 dark:text-blue-400">{rule.keyword}</td>
-                    <td className="text-sm">{rule.card_name || `卡券ID: ${rule.card_id}`}</td>
-                    <td className="text-center">{rule.delivery_count}</td>
-                    <td className="text-center text-slate-500">{rule.delivery_times || 0}</td>
-                    <td>
-                      {rule.enabled ? (
-                        <span className="badge-success">启用</span>
-                      ) : (
-                        <span className="badge-danger">禁用</span>
-                      )}
-                    </td>
-                    <td>
-                      <div className="">
-                        <button
-                          onClick={() => handleToggleEnabled(rule)}
-                          className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                          title={rule.enabled ? '禁用' : '启用'}
-                        >
-                          {rule.enabled ? (
-                            <PowerOff className="w-4 h-4 text-amber-500" />
-                          ) : (
-                            <Power className="w-4 h-4 text-emerald-500" />
-                          )}
-                        </button>
-                        <button
-                          onClick={() => openEditModal(rule)}
-                          className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                          title="编辑"
-                        >
-                          <Edit2 className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(rule.id)}
-                          className="p-2 rounded-lg hover:bg-red-50 transition-colors"
-                          title="删除"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                rules.map((rule) => {
+                  // 查找关联的卡券以获取规格信息
+                  const relatedCard = cards.find(c => c.id === rule.card_id)
+                  return (
+                    <tr key={rule.id}>
+                      <td className="font-medium text-blue-600 dark:text-blue-400">{rule.keyword}</td>
+                      <td className="text-sm">{rule.card_name || `卡券ID: ${rule.card_id}`}</td>
+                      <td>
+                        {relatedCard?.is_multi_spec ? (
+                          <span className="text-xs text-blue-600 dark:text-blue-400">
+                            {relatedCard.spec_name}: {relatedCard.spec_value}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="text-center text-slate-500">{rule.delivery_times || 0}</td>
+                      <td>
+                        {rule.enabled ? (
+                          <span className="badge-success">启用</span>
+                        ) : (
+                          <span className="badge-danger">禁用</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="">
+                          <button
+                            onClick={() => handleToggleEnabled(rule)}
+                            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                            title={rule.enabled ? '禁用' : '启用'}
+                          >
+                            {rule.enabled ? (
+                              <PowerOff className="w-4 h-4 text-amber-500" />
+                            ) : (
+                              <Power className="w-4 h-4 text-emerald-500" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => openEditModal(rule)}
+                            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                            title="编辑"
+                          >
+                            <Edit2 className="w-4 h-4 text-blue-500 dark:text-blue-400" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(rule.id)}
+                            className="p-2 rounded-lg hover:bg-red-50 transition-colors"
+                            title="删除"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-500" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>
@@ -290,21 +299,12 @@ export function Delivery() {
                       { value: '', label: '请选择卡券' },
                       ...cards.map((card) => ({
                         value: String(card.id),
-                        label: card.name || card.text_content?.substring(0, 20) || `卡券 ${card.id}`,
+                        label: card.is_multi_spec 
+                          ? `${card.name} [${card.spec_name}: ${card.spec_value}]`
+                          : card.name || card.text_content?.substring(0, 20) || `卡券 ${card.id}`,
                       })),
                     ]}
                     placeholder="请选择卡券"
-                  />
-                </div>
-                <div>
-                  <label className="input-label">发货数量</label>
-                  <input
-                    type="number"
-                    value={formDeliveryCount}
-                    onChange={(e) => setFormDeliveryCount(Number(e.target.value) || 1)}
-                    className="input-ios"
-                    min={1}
-                    placeholder="每次发货的卡密数量"
                   />
                 </div>
                 <div>

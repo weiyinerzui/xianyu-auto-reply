@@ -40,6 +40,9 @@ export interface Account {
 export interface AccountDetail extends Account {
   keywords?: Keyword[]
   keywordCount?: number
+  username?: string
+  login_password?: string
+  show_browser?: boolean
 }
 
 // 关键词相关类型
@@ -95,21 +98,28 @@ export interface Order {
   cookie_id: string
   item_id: string
   buyer_id: string
+  chat_id?: string
   sku_info?: string
+  spec_name?: string
+  spec_value?: string
   quantity: number
   amount: string
   status: OrderStatus
+  is_bargain?: boolean
   created_at?: string
   updated_at?: string
 }
 
 export type OrderStatus =
   | 'processing'
+  | 'pending_ship'
   | 'processed'
   | 'shipped'
   | 'completed'
+  | 'refunding'
   | 'cancelled'
   | 'unknown'
+
 
 // 卡券相关类型
 export interface Card {

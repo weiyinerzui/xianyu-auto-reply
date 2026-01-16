@@ -1752,7 +1752,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=False  # 使用有头模式（可视化浏览器）
+                    headless=True  # 使用无头模式
                 )
 
                 # 在线程池中执行滑块验证
@@ -3106,8 +3106,14 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"调试消息结构时发生错误: {self._safe_str(e)}")
 
-    async def get_default_reply(self, send_user_name: str, send_user_id: str, send_message: str, chat_id: str, item_id: str = None) -> str:
-        """获取默认回复内容，支持指定商品回复、变量替换和只回复一次功能"""
+    async def get_default_reply(self, send_user_name: str, send_user_id: str, send_message: str, chat_id: str, item_id: str = None) -> dict:
+        """获取默认回复内容，支持指定商品回复、变量替换、只回复一次功能和图片发送
+        
+        Returns:
+            dict: 包含 'text' (文字回复) 和 'image_url' (图片URL，可选) 的字典
+                  或 None (无回复)
+                  或 "EMPTY_REPLY" (空回复标记)
+        """
         try:
             from db_manager import db_manager
 
@@ -3127,11 +3133,11 @@ class XianyuLive:
                             item_id=item_id
                         )
                         logger.info(f"【{self.cookie_id}】指定商品回复内容: {formatted_reply}")
-                        return formatted_reply
+                        return {'text': formatted_reply, 'image_url': None}
                     except Exception as format_error:
                         logger.error(f"指定商品回复变量替换失败: {self._safe_str(format_error)}")
                         # 如果变量替换失败，返回原始内容
-                        return reply_content
+                        return {'text': reply_content, 'image_url': None}
                 else:
                     logger.warning(f"【{self.cookie_id}】商品ID {item_id} 没有配置指定回复，使用默认回复")
 
@@ -3150,8 +3156,11 @@ class XianyuLive:
                     return None
 
             reply_content = default_reply_settings.get('reply_content', '')
-            if not reply_content or (reply_content and reply_content.strip() == ''):
-                logger.info(f"账号 {self.cookie_id} 默认回复内容为空，不进行回复")
+            reply_image_url = default_reply_settings.get('reply_image_url', '')
+            
+            # 如果文字和图片都为空，返回空回复标记
+            if (not reply_content or reply_content.strip() == '') and (not reply_image_url or reply_image_url.strip() == ''):
+                logger.info(f"账号 {self.cookie_id} 默认回复内容和图片都为空，不进行回复")
                 return "EMPTY_REPLY"  # 返回特殊标记表示不回复
 
             # 进行变量替换
@@ -3163,7 +3172,7 @@ class XianyuLive:
                     send_user_name=send_user_name,
                     send_user_id=send_user_id,
                     send_message=send_message
-                )
+                ) if reply_content else ''
 
                 if item_replay:
                     formatted_reply = item_replay.get('reply_content', '')
@@ -3173,12 +3182,12 @@ class XianyuLive:
                     db_manager.add_default_reply_record(self.cookie_id, chat_id)
                     logger.info(f"【{self.cookie_id}】记录默认回复: chat_id={chat_id}")
 
-                logger.info(f"【{self.cookie_id}】使用默认回复: {formatted_reply}")
-                return formatted_reply
+                logger.info(f"【{self.cookie_id}】使用默认回复: 文字={formatted_reply}, 图片={reply_image_url}")
+                return {'text': formatted_reply, 'image_url': reply_image_url if reply_image_url and reply_image_url.strip() else None}
             except Exception as format_error:
                 logger.error(f"默认回复变量替换失败: {self._safe_str(format_error)}")
                 # 如果变量替换失败，返回原始内容
-                return reply_content
+                return {'text': reply_content, 'image_url': reply_image_url if reply_image_url and reply_image_url.strip() else None}
 
         except Exception as e:
             logger.error(f"获取默认回复失败: {self._safe_str(e)}")
@@ -3347,6 +3356,45 @@ class XianyuLive:
 
         return False
 
+    async def _get_image_size_from_url(self, image_url: str) -> tuple:
+        """从URL获取图片尺寸
+        
+        Args:
+            image_url: 图片URL
+            
+        Returns:
+            (width, height) 元组，失败返回 (None, None)
+        """
+        import aiohttp
+        from io import BytesIO
+        
+        try:
+            logger.info(f"【{self.cookie_id}】开始从URL获取图片尺寸: {image_url[:80]}...")
+            
+            # 不接受AVIF格式（PIL默认不支持），让CDN返回WEBP/JPEG等格式
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/jpeg,image/png,image/gif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.goofish.com/',
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        image_data = await response.read()
+                        from PIL import Image
+                        with Image.open(BytesIO(image_data)) as img:
+                            width, height = img.size
+                            logger.info(f"【{self.cookie_id}】解析图片尺寸成功: {width}x{height}")
+                            return (width, height)
+                    else:
+                        logger.warning(f"【{self.cookie_id}】下载图片失败，HTTP状态码: {response.status}")
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】从URL获取图片尺寸失败: {e}")
+        
+        return (None, None)
+
     async def _update_keyword_image_url(self, keyword: str, new_image_url: str):
         """更新关键词的图片URL"""
         try:
@@ -3370,6 +3418,18 @@ class XianyuLive:
                 logger.warning(f"卡券图片URL更新失败: 卡券ID={card_id}")
         except Exception as e:
             logger.error(f"更新卡券图片URL失败: {e}")
+
+    async def _update_default_reply_image_url(self, new_image_url: str):
+        """更新默认回复的图片URL为CDN URL"""
+        try:
+            from db_manager import db_manager
+            success = db_manager.update_default_reply_image_url(self.cookie_id, new_image_url)
+            if success:
+                logger.info(f"【{self.cookie_id}】默认回复图片URL已更新: {new_image_url}")
+            else:
+                logger.warning(f"【{self.cookie_id}】默认回复图片URL更新失败")
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】更新默认回复图片URL失败: {e}")
 
     async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str):
         """获取AI回复"""
@@ -3526,9 +3586,6 @@ class XianyuLive:
                     logger.info(f"📱 解析后的配置数据: {config_data}")
 
                     match channel_type:
-                        case 'qq':
-                            logger.info(f"📱 开始发送QQ通知...")
-                            await self._send_qq_notification(config_data, notification_msg)
                         case 'ding_talk' | 'dingtalk':
                             logger.info(f"📱 开始发送钉钉通知...")
                             await self._send_dingtalk_notification(config_data, notification_msg)
@@ -3572,6 +3629,7 @@ class XianyuLive:
         except (json.JSONDecodeError, TypeError):
             # 兼容旧格式（直接字符串）
             return {"config": config}
+
 
     async def _send_qq_notification(self, config_data: dict, message: str):
         """
@@ -4200,9 +4258,6 @@ class XianyuLive:
                     config_data = self._parse_notification_config(channel_config)
 
                     match channel_type:
-                        case 'qq':
-                            await self._send_qq_notification(config_data, notification_msg)
-                            notification_sent = True
                         case 'ding_talk' | 'dingtalk':
                             await self._send_dingtalk_notification(config_data, notification_msg)
                             notification_sent = True
@@ -4354,9 +4409,6 @@ class XianyuLive:
                         config_data = self._parse_notification_config(channel_config)
 
                         match channel_type:
-                            case 'qq':
-                                await self._send_qq_notification(config_data, notification_message)
-                                logger.info(f"已发送自动发货通知到QQ")
                             case 'ding_talk' | 'dingtalk':
                                 await self._send_dingtalk_notification(config_data, notification_message)
                                 logger.info(f"已发送自动发货通知到钉钉")
@@ -4640,41 +4692,60 @@ class XianyuLive:
                         if spec_name and spec_value:
                             logger.info(f"获取到规格信息: {spec_name} = {spec_value}")
                         else:
-                            logger.warning(f"未能获取到规格信息，将使用兜底匹配")
+                            logger.warning(f"未能获取到规格信息，将跳过自动发货")
+                            return None
                     else:
-                        logger.warning(f"获取订单详情失败（返回类型: {type(order_detail).__name__}），将使用兜底匹配")
+                        logger.warning(f"获取订单详情失败（返回类型: {type(order_detail).__name__}），将跳过自动发货")
+                        return None
                 except Exception as e:
-                    logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将使用兜底匹配")
+                    logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
+                    return None
 
-            # 智能匹配发货规则：优先精确匹配，然后兜底匹配
+            # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
             delivery_rules = []
 
-            # 第一步：如果有规格信息，尝试精确匹配多规格发货规则
-            if spec_name and spec_value:
-                logger.info(f"尝试精确匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
-                delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
-
-                if delivery_rules:
-                    logger.info(f"✅ 找到精确匹配的多规格发货规则: {len(delivery_rules)}个")
+            if is_multi_spec:
+                # 多规格商品：只匹配多规格发货规则
+                if spec_name and spec_value:
+                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
+                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
+                    # 过滤只保留多规格卡券
+                    delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
+                    
+                    if delivery_rules:
+                        logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+                    else:
+                        logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
+                        return None
                 else:
-                    logger.info(f"❌ 未找到精确匹配的多规格发货规则")
-
-            # 第二步：如果精确匹配失败，尝试兜底匹配（普通发货规则）
-            if not delivery_rules:
-                logger.info(f"尝试兜底匹配普通发货规则: {search_text[:50]}...")
+                    logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
+                    return None
+            else:
+                # 非多规格商品：只匹配非多规格发货规则
+                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
                 delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
-
+                # 过滤只保留非多规格卡券
+                delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
+                
                 if delivery_rules:
-                    logger.info(f"✅ 找到兜底匹配的普通发货规则: {len(delivery_rules)}个")
+                    logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
                 else:
-                    logger.info(f"❌ 未找到任何匹配的发货规则")
+                    logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
+                    return None
+
+            # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
+            if len(delivery_rules) > 1:
+                rule_names = [f"{r['card_name']}({r.get('spec_name', '')}:{r.get('spec_value', '')})" if r.get('is_multi_spec') else r['card_name'] for r in delivery_rules]
+                logger.warning(f"❌ 匹配到多个发货规则({len(delivery_rules)}个)，无法确定使用哪个，跳过自动发货: {', '.join(rule_names)}")
+                return None
 
             if not delivery_rules:
                 logger.warning(f"未找到匹配的发货规则: {search_text[:50]}...")
                 return None
 
-            # 使用第一个匹配的规则（按关键字长度降序排列，优先匹配更精确的规则）
+            # 使用唯一匹配的规则
             rule = delivery_rules[0]
+            logger.info(f"✅ 唯一匹配发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
 
             # 保存商品信息到数据库（需要有商品标题才保存）
             # 尝试获取商品标题
@@ -4832,6 +4903,10 @@ class XianyuLive:
     def _process_delivery_content_with_description(self, delivery_content: str, card_description: str) -> str:
         """处理发货内容和备注信息，实现变量替换"""
         try:
+            # 如果是图片发送标记，不进行备注处理，直接返回
+            if delivery_content.startswith("__IMAGE_SEND__"):
+                return delivery_content
+            
             # 如果没有备注信息，直接返回发货内容
             if not card_description or not card_description.strip():
                 return delivery_content
@@ -7200,12 +7275,87 @@ class XianyuLive:
                         reply_source = 'AI'  # 标记为AI回复
                     else:
                         # 3. 最后使用默认回复
-                        reply = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
-                        if reply == "EMPTY_REPLY":
+                        default_reply_result = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
+                        if default_reply_result == "EMPTY_REPLY":
                             # 默认回复内容为空，不进行任何回复
                             logger.info(f"[{msg_time}] 【{self.cookie_id}】默认回复内容为空，跳过自动回复")
                             return
-                        reply_source = '默认'  # 标记为默认回复
+                        
+                        # 处理默认回复（可能包含图片和文字）
+                        if default_reply_result and isinstance(default_reply_result, dict):
+                            reply_source = '默认'  # 标记为默认回复
+                            default_image_url = default_reply_result.get('image_url')
+                            default_text = default_reply_result.get('text')
+                            
+                            # 如果存在图片，先发送图片
+                            if default_image_url:
+                                try:
+                                    # 处理图片URL（上传到CDN如果需要）
+                                    final_image_url = default_image_url
+                                    image_width, image_height = 800, 600  # 默认尺寸
+                                    
+                                    if self._is_cdn_url(default_image_url):
+                                        # 已经是CDN链接，获取真实尺寸
+                                        logger.info(f"【{self.cookie_id}】默认回复使用CDN图片: {default_image_url}")
+                                        width, height = await self._get_image_size_from_url(default_image_url)
+                                        if width and height:
+                                            image_width, image_height = width, height
+                                    elif default_image_url.startswith('/static/uploads/') or default_image_url.startswith('static/uploads/'):
+                                        # 本地图片，需要上传到闲鱼CDN
+                                        local_image_path = default_image_url.replace('/static/uploads/', 'static/uploads/')
+                                        if os.path.exists(local_image_path):
+                                            logger.info(f"【{self.cookie_id}】准备上传默认回复本地图片到闲鱼CDN: {local_image_path}")
+                                            
+                                            from utils.image_uploader import ImageUploader
+                                            uploader = ImageUploader(self.cookies_str)
+                                            
+                                            async with uploader:
+                                                cdn_url = await uploader.upload_image(local_image_path)
+                                                if cdn_url:
+                                                    logger.info(f"【{self.cookie_id}】默认回复图片上传成功，CDN URL: {cdn_url}")
+                                                    final_image_url = cdn_url
+                                                    
+                                                    # 更新数据库中的图片URL为CDN URL
+                                                    await self._update_default_reply_image_url(cdn_url)
+                                                    
+                                                    # 获取实际图片尺寸
+                                                    from utils.image_utils import image_manager
+                                                    try:
+                                                        actual_width, actual_height = image_manager.get_image_size(local_image_path)
+                                                        if actual_width and actual_height:
+                                                            image_width, image_height = actual_width, actual_height
+                                                    except Exception as e:
+                                                        logger.warning(f"【{self.cookie_id}】获取图片尺寸失败，使用默认尺寸: {e}")
+                                                else:
+                                                    logger.error(f"【{self.cookie_id}】默认回复图片上传失败: {local_image_path}")
+                                                    final_image_url = None
+                                        else:
+                                            logger.error(f"【{self.cookie_id}】默认回复本地图片文件不存在: {local_image_path}")
+                                            final_image_url = None
+                                    else:
+                                        # 其他类型的URL，获取真实尺寸
+                                        width, height = await self._get_image_size_from_url(default_image_url)
+                                        if width and height:
+                                            image_width, image_height = width, height
+                                    
+                                    # 发送图片
+                                    if final_image_url:
+                                        await self.send_image_msg(websocket, chat_id, send_user_id, final_image_url, image_width, image_height)
+                                        msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                                        logger.info(f"[{msg_time}] 【{reply_source}图片发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 图片 {final_image_url}")
+                                except Exception as e:
+                                    logger.error(f"【{self.cookie_id}】默认回复图片发送失败: {self._safe_str(e)}")
+                            
+                            # 然后发送文字（如果有）
+                            if default_text and default_text.strip():
+                                reply = default_text
+                            else:
+                                # 只有图片没有文字，已经发送完毕
+                                if default_image_url:
+                                    return
+                                reply = None
+                        else:
+                            reply = None
 
             # 注意：这里只有商品ID，没有标题和详情，根据新的规则不保存到数据库
             # 商品信息会在其他有完整信息的地方保存（如发货规则匹配时）
@@ -7272,6 +7422,8 @@ class XianyuLive:
 
             # 如果不是同步包消息，直接返回
             if not self.is_sync_package(message_data):
+                # 添加调试日志，记录非同步包消息
+                logger.debug(f"【{self.cookie_id}】非同步包消息，跳过处理")
                 return
 
             # 获取并解密数据
@@ -7681,6 +7833,20 @@ class XianyuLive:
                         if not order_id:
                             logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，无法执行免拼发货')
                             return
+
+                        # 更新订单的is_bargain字段为True（标记为小刀订单）
+                        try:
+                            from db_manager import db_manager
+                            db_manager.insert_or_update_order(
+                                order_id=order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                cookie_id=self.cookie_id,
+                                is_bargain=True
+                            )
+                            logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单 {order_id} 已标记为小刀订单')
+                        except Exception as e:
+                            logger.error(f'[{msg_time}] 【{self.cookie_id}】标记小刀订单失败: {self._safe_str(e)}')
 
                         # 延迟2秒后执行免拼发货
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】延迟2秒后执行免拼发货...')
