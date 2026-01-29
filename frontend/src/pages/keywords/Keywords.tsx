@@ -25,6 +25,7 @@ export function Keywords() {
   const [replyText, setReplyText] = useState('')
   const [itemIdText, setItemIdText] = useState('')  // 绑定的商品ID
   const [saving, setSaving] = useState(false)
+  const [fuzzyMatch, setFuzzyMatch] = useState(false)  // 模糊匹配开关
   const [importing, setImporting] = useState(false)
   const [exporting, setExporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -121,6 +122,7 @@ export function Keywords() {
     setKeywordText('')
     setReplyText('')
     setItemIdText('')
+    setFuzzyMatch(false)  // 重置模糊匹配开关
     setIsModalOpen(true)
   }
 
@@ -135,6 +137,7 @@ export function Keywords() {
     setKeywordText(keyword.keyword)
     setReplyText(keyword.reply)
     setItemIdText(keyword.item_id || '')
+    setFuzzyMatch(keyword.fuzzy_match ?? false)  // 加载模糊匹配设置
     setIsModalOpen(true)
   }
 
