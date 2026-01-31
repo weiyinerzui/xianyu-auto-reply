@@ -126,6 +126,11 @@ RUN apt-get update && \
         # OpenCV运行时依赖
         libgl1 \
         libglib2.0-0 \
+        # 中文字体支持（解决滑块验证缺字问题）
+        fonts-wqy-zenhei \
+        fonts-wqy-microhei \
+        fonts-arphic-uming \
+        xfonts-intl-chinese \
         && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # 设置时区

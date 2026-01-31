@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     # 使用root用户避免权限问题
     user: "0:0"
+    # 启用共享内存，解决 Chromium 在 Docker 中崩溃的问题
+    ipc: host
     ports:
       - "${WEB_PORT:-8080}:8080"
     volumes:
