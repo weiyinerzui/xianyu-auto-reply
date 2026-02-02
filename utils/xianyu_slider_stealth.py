@@ -241,6 +241,28 @@ class RetryStrategyStats:
 # 全局策略统计实例
 strategy_stats = RetryStrategyStats()
 
+# 滑块验证策略配置
+SLIDER_STRATEGIES = {
+    'fast': {
+        'steps_range': [8, 12],        # 较少步数
+        'delay_range': [0.005, 0.015], # 较短延迟
+        'overshoot_range': [1.5, 1.8], # 适度超调
+        'description': '快速模式'
+    },
+    'normal': {
+        'steps_range': [15, 25],       # 中等步数
+        'delay_range': [0.015, 0.030], # 中等延迟
+        'overshoot_range': [1.2, 1.4], # 较小超调
+        'description': '正常模式'
+    },
+    'slow': {
+        'steps_range': [30, 50],       # 较多步数
+        'delay_range': [0.025, 0.045], # 较长延迟
+        'overshoot_range': [1.05, 1.15], # 极小超调
+        'description': '谨慎模式'
+    }
+}
+
 class XianyuSliderStealth:
     
     def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True):
@@ -1197,56 +1219,85 @@ class XianyuSliderStealth:
         else:
             return t
     
-    def _generate_physics_trajectory(self, distance: float):
-        """基于物理加速度模型生成轨迹 - 极速模式
+    def _generate_physics_trajectory(self, distance: float, strategy: str = 'normal'):
+        """基于物理加速度模型生成轨迹 - 支持多种策略
         
-        优化策略：
-        1. 极少轨迹点（5-8步）：快速完成
-        2. 持续加速：一气呵成，不减速
-        3. 确保超调50%以上：保证滑动到位
-        4. 无回退：单向滑动
+        Args:
+            distance: 滑动距离
+            strategy: 策略类型 ('fast', 'normal', 'slow')
         """
         trajectory = []
-        # 确保超调100%
-        target_distance = distance * random.uniform(2.0, 2.1)  # 超调100-110%
         
-        # 极少步数（5-8步）
-        steps = random.randint(5, 8)
+        # 获取策略参数
+        strategy_config = SLIDER_STRATEGIES.get(strategy, SLIDER_STRATEGIES['normal'])
+        steps_range = strategy_config['steps_range']
+        delay_range = strategy_config['delay_range']
+        overshoot_range = strategy_config['overshoot_range']
+        description = strategy_config['description']
         
-        # 极快时间间隔
-        base_delay = random.uniform(0.0002, 0.0005)
+        # 计算目标距离（含超调）
+        overshoot = random.uniform(*overshoot_range)
+        target_distance = distance * overshoot
         
-        # 生成轨迹点 - 直线加速
+        # 随机步数
+        steps = random.randint(*steps_range)
+        
+        # 基础延迟
+        base_delay = random.uniform(*delay_range)
+        
+        # 生成轨迹点 - 使用平滑加速曲线
         for i in range(steps):
             progress = (i + 1) / steps
             
-            # 计算当前位置（使用平方加速曲线，越来越快）
-            x = target_distance * (progress ** 1.5)  # 加速曲线
+            # 使用贝塞尔曲线风格的加速（更像人类）
+            # 开始慢 -> 中间快 -> 结束稍慢
+            if progress < 0.3:
+                # 加速阶段
+                eased_progress = progress * (progress / 0.3) * 0.5
+            elif progress < 0.8:
+                # 匀速阶段
+                eased_progress = 0.15 + (progress - 0.3) * 1.3
+            else:
+                # 减速阶段
+                remaining = 1 - progress
+                decel_factor = 1 - (remaining / 0.2) * 0.1
+                eased_progress = 0.8 + (progress - 0.8) * decel_factor
             
-            # 极小Y轴抖动
-            y = random.uniform(0, 2)
+            x = target_distance * min(eased_progress, 1.0)
             
-            # 极短延迟
-            delay = base_delay * random.uniform(0.9, 1.1)
+            # Y轴抖动（慢速策略抖动更大，更像人类）
+            if strategy == 'slow':
+                y = random.uniform(-3, 5)
+            elif strategy == 'normal':
+                y = random.uniform(-2, 4)
+            else:
+                y = random.uniform(0, 2)
+            
+            # 延迟（添加随机变化）
+            delay = base_delay * random.uniform(0.8, 1.2)
             
             trajectory.append((x, y, delay))
         
-        logger.info(f"【{self.pure_user_id}】极速模式：{len(trajectory)}步，超调100%+")
+        logger.info(f"【{self.pure_user_id}】{description}：{len(trajectory)}步，超调{(overshoot-1)*100:.0f}%")
         return trajectory
     
-    def generate_human_trajectory(self, distance: float):
-        """生成人类化滑动轨迹 - 只使用极速物理模型"""
+    def generate_human_trajectory(self, distance: float, strategy: str = 'normal'):
+        """生成人类化滑动轨迹
+        
+        Args:
+            distance: 滑动距离
+            strategy: 策略类型 ('fast', 'normal', 'slow')
+        """
         try:
-            # 只使用物理加速度模型（移除贝塞尔模型以提高速度和稳定性）
-            logger.info(f"【{self.pure_user_id}】📐 使用极速物理模型生成轨迹")
-            trajectory = self._generate_physics_trajectory(distance)
-            
-            logger.debug(f"【{self.pure_user_id}】极速模式：一次拖到位，无回退")
+            strategy_config = SLIDER_STRATEGIES.get(strategy, SLIDER_STRATEGIES['normal'])
+            logger.info(f"【{self.pure_user_id}】📐 使用{strategy_config['description']}生成轨迹")
+            trajectory = self._generate_physics_trajectory(distance, strategy)
             
             # 保存轨迹数据
             self.current_trajectory_data = {
                 "distance": distance,
-                "model": "physics_fast",
+                "strategy": strategy,
+                "model": f"physics_{strategy}",
                 "total_steps": len(trajectory),
                 "trajectory_points": trajectory.copy(),
                 "final_left_px": 0,
@@ -2244,27 +2295,44 @@ class XianyuSliderStealth:
             return {}
     
     def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
-        """处理滑块验证（极速模式）
+        """处理滑块验证（自适应策略模式）
         
         Args:
-            max_retries: 最大重试次数（默认3次，因为同一个页面连续失败3次后就不会成功了）
+            max_retries: 最大重试次数（默认3次）
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
+        
+        策略说明：
+            - 第1次尝试: fast (快速模式)
+            - 第2次尝试: normal (正常模式)
+            - 第3次尝试: slow (谨慎模式)
         """
         failure_records = []
-        current_strategy = 'ultra_fast'  # 极速策略
+        
+        # 定义每次尝试使用的策略
+        strategy_sequence = ['fast', 'normal', 'slow']
         
         for attempt in range(1, max_retries + 1):
             try:
-                logger.info(f"【{self.pure_user_id}】开始处理滑块验证... (第{attempt}/{max_retries}次尝试)")
+                # 选择当前尝试的策略
+                current_strategy = strategy_sequence[min(attempt - 1, len(strategy_sequence) - 1)]
+                strategy_config = SLIDER_STRATEGIES.get(current_strategy, SLIDER_STRATEGIES['normal'])
+                
+                logger.info(f"【{self.pure_user_id}】开始处理滑块验证... (第{attempt}/{max_retries}次尝试, 策略: {strategy_config['description']})")
                 
                 # 如果不是第一次尝试，短暂等待后重试
                 if attempt > 1:
-                    retry_delay = random.uniform(0.5, 1.0)  # 减少等待时间
-                    logger.info(f"【{self.pure_user_id}】等待{retry_delay:.2f}秒后重试...")
+                    # 根据策略调整等待时间
+                    if current_strategy == 'slow':
+                        retry_delay = random.uniform(1.5, 2.5)
+                    elif current_strategy == 'normal':
+                        retry_delay = random.uniform(1.0, 1.5)
+                    else:
+                        retry_delay = random.uniform(0.5, 1.0)
+                    
+                    logger.info(f"【{self.pure_user_id}】等待{retry_delay:.2f}秒后使用{strategy_config['description']}重试...")
                     time.sleep(retry_delay)
                     
                     # 不刷新页面，直接在原来的frame中重试
-                    # 保留frame引用，让重试时可以直接使用原来的frame查找滑块
                     if hasattr(self, '_detected_slider_frame'):
                         frame_info = "主页面" if self._detected_slider_frame is None else "Frame"
                         logger.info(f"【{self.pure_user_id}】保留frame引用，将在原来的{frame_info}中重试")
@@ -2283,8 +2351,8 @@ class XianyuSliderStealth:
                     logger.error(f"【{self.pure_user_id}】滑动距离计算失败")
                     continue
                 
-                # 3. 生成人类化轨迹
-                trajectory = self.generate_human_trajectory(slide_distance)
+                # 3. 生成人类化轨迹（使用当前策略）
+                trajectory = self.generate_human_trajectory(slide_distance, current_strategy)
                 if not trajectory:
                     logger.error(f"【{self.pure_user_id}】轨迹生成失败")
                     continue
@@ -2294,9 +2362,9 @@ class XianyuSliderStealth:
                     logger.error(f"【{self.pure_user_id}】滑动模拟失败")
                     continue
                 
-                # 5. 检查验证结果（极速模式）
+                # 5. 检查验证结果
                 if self.check_verification_success_fast(slider_button):
-                    logger.info(f"【{self.pure_user_id}】✅ 滑块验证成功! (第{attempt}次尝试)")
+                    logger.info(f"【{self.pure_user_id}】✅ 滑块验证成功! (第{attempt}次尝试, 策略: {current_strategy})")
                     
                     # 📊 记录策略成功
                     strategy_stats.record_attempt(attempt, current_strategy, success=True)
@@ -2316,7 +2384,7 @@ class XianyuSliderStealth:
                     
                     return True
                 else:
-                    logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次验证失败")
+                    logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次验证失败 (策略: {current_strategy})")
                     
                     # 📊 记录策略失败
                     strategy_stats.record_attempt(attempt, current_strategy, success=False)
@@ -2327,8 +2395,11 @@ class XianyuSliderStealth:
                         failure_info = self._analyze_failure(attempt, slide_distance, self.current_trajectory_data)
                         failure_records.append(failure_info)
                     
-                    # 如果不是最后一次尝试，继续
+                    # 如果不是最后一次尝试，提示将切换策略
                     if attempt < max_retries:
+                        next_strategy = strategy_sequence[min(attempt, len(strategy_sequence) - 1)]
+                        next_config = SLIDER_STRATEGIES.get(next_strategy, SLIDER_STRATEGIES['normal'])
+                        logger.info(f"【{self.pure_user_id}】🔄 切换策略: {current_strategy} → {next_strategy} ({next_config['description']})")
                         continue
                 
             except Exception as e:
@@ -2337,7 +2408,7 @@ class XianyuSliderStealth:
                     continue
         
         # 所有尝试都失败了
-        logger.error(f"【{self.pure_user_id}】滑块验证失败，已尝试{max_retries}次")
+        logger.error(f"【{self.pure_user_id}】滑块验证失败，已尝试{max_retries}次（策略: fast → normal → slow）")
         
         # 输出失败分析摘要
         if failure_records:
