@@ -23,6 +23,21 @@ mkdir -p /app/data /app/logs /app/backups /app/static/uploads/images
 mkdir -p /app/trajectory_history
 echo "✓ 目录创建完成"
 
+# 启动 Xvfb 虚拟显示器（用于滑块验证的浏览器）
+echo "启动 Xvfb 虚拟显示器..."
+# 检查是否安装了 xvfb
+if command -v Xvfb &> /dev/null; then
+    # 先杀掉可能存在的旧进程
+    pkill -f "Xvfb :99" 2>/dev/null || true
+    # 启动 Xvfb 在 display :99
+    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+    export DISPLAY=:99
+    sleep 1
+    echo "✓ Xvfb 已启动 (DISPLAY=:99)"
+else
+    echo "⚠ Xvfb 未安装，滑块验证将使用纯 headless 模式"
+fi
+
 # 设置目录权限
 echo "设置目录权限..."
 chmod 777 /app/data /app/logs /app/backups /app/static/uploads /app/static/uploads/images
