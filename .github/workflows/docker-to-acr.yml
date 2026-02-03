@@ -1,0 +1,37 @@
+name: Build and Push to Aliyun ACR
+
+on:
+  push:
+    branches:
+      - main   # 如果你用的是其他分支，改这里
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    env:
+      REGISTRY: crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com
+      NAMESPACE: weiyinerzui
+      REPO_NAME: xianyu-auto-reply
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 登录到你的 ACR 企业版实例
+      - name: Login to ACR
+        uses: aliyun/acr-login@v1
+        with:
+          login-server: https://${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      # 构建并推送镜像
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}   # 这里跟你本地保持一致；想每次唯一可改为 ${{ github.sha }}
+        run: |
+          IMAGE=${REGISTRY}/${NAMESPACE}/${REPO_NAME}:${IMAGE_TAG}
+          echo "Building image: ${IMAGE}"
+          docker build -t ${IMAGE} .
+          docker push ${IMAGE}
