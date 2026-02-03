@@ -1,4 +1,4 @@
-name: Build and Push to Aliyun ACR
+name: Build & Push xianyu-auto-reply to Aliyun ACR (Beijing)
 
 on:
   push:
@@ -6,34 +6,47 @@ on:
       - main
   workflow_dispatch:
 
+env:
+  REGISTRY: crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com
+  NAMESPACE: weiyinerzui
+  IMAGE_NAME: xianyu-auto-reply
+
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
 
-    env:
-      REGION: cn-beijing
-      REGISTRY: crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com
-      NAMESPACE: weiyinerzui
-      REPO_NAME: xianyu-auto-reply
-
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Login to ACR (AK/SK)
-        uses: aliyun/acr-login@v1
-        with:
-          login-server: https://${{ env.REGISTRY }}
-          region-id: ${{ env.REGION }}
-          access-key-id: ${{ secrets.ALIYUN_AK }}
-          access-key-secret: ${{ secrets.ALIYUN_SK }}
-          instance-id: ${{ secrets.ACR_INSTANCE_ID }}
+      - name: Set image tag
+        run: |
+          echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(date -u +'%Y%m%d%H%M')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Aliyun ACR (Beijing Personal)
+        run: |
+          echo "${{ secrets.ALIYUN_PASSWORD }}" | docker login \
+            $REGISTRY \
+            -u ${{ secrets.ALIYUN_USERNAME }} \
+            --password-stdin
 
       - name: Build and push image
-        env:
-          IMAGE_TAG: v1
-        run: |
-          IMAGE=${REGISTRY}/${NAMESPACE}/${REPO_NAME}:${IMAGE_TAG}
-          echo "Building image: ${IMAGE}"
-          docker build -t ${IMAGE} .
-          docker push ${IMAGE}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:${{ env.IMAGE_TAG }}
+            crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ env.BUILD_TIME }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
