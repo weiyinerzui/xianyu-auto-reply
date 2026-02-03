@@ -1,13 +1,5 @@
 # 爱用不用，风险自担！！！爱用不用，风险自担！！！爱用不用，风险自担！！！
 
-## 交流群
-
-| 微信群 | 微信群1 | QQ群 |
-|:---:|:---:|:---:|
-| ![微信群](static/wechat-group.png) | ![微信群1](static/wechat-group1.png) | ![QQ群](static/qq-group.png) |
-
-
-
 
 <details>
 <summary>🛡️ 安全修复说明（点击展开）</summary>
