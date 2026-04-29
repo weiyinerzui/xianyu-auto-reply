@@ -4703,12 +4703,16 @@ class XianyuLive:
 
             # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
             delivery_rules = []
+            
+            # 隔离不同用户的规则：获取当前 cookie_id 所属的 user_id
+            cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
+            user_id = cookie_info.get('user_id') if cookie_info else None
 
             if is_multi_spec:
                 # 多规格商品：只匹配多规格发货规则
                 if spec_name and spec_value:
-                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
-                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
+                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}], user_id={user_id}")
+                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value, user_id=user_id)
                     # 过滤只保留多规格卡券
                     delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
                     
@@ -4722,8 +4726,8 @@ class XianyuLive:
                     return None
             else:
                 # 非多规格商品：只匹配非多规格发货规则
-                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
-                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
+                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}..., user_id={user_id}")
+                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=user_id)
                 # 过滤只保留非多规格卡券
                 delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
                 

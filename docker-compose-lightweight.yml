@@ -1,0 +1,41 @@
+# 阿里云轻量服务器优化版 (2 vCPU / 2 GiB RAM)
+# 使用方法: docker compose -f docker-compose-lightweight.yml up -d
+
+services:
+  xianyu-app:
+    image: registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
+    container_name: xianyu-auto-reply
+    restart: unless-stopped
+    user: "0:0"
+    ipc: host
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data:rw
+      - ./logs:/app/logs:rw
+      - ./global_config.yml:/app/global_config.yml:ro
+      - ./backups:/app/backups:rw
+    env_file:
+      - .env.lightweight
+    deploy:
+      resources:
+        limits:
+          memory: 1280M  # 硬限制 1.25 GiB，留余量给系统
+          cpus: '1.5'    # 限制 75% CPU
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    networks:
+      - xianyu-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 60s      # 增加间隔减少资源消耗
+      timeout: 15s
+      retries: 3
+      start_period: 120s # 增加启动等待时间
+    # 关键: OOM 时优先杀死容器而非系统服务
+    oom_score_adj: 500
+
+networks:
+  xianyu-network:
+    driver: bridge

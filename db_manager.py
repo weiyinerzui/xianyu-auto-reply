@@ -3373,13 +3373,22 @@ class DBManager:
                 logger.error(f"获取发货规则列表失败: {e}")
                 return []
 
-    def get_delivery_rules_by_keyword(self, keyword: str):
+    def get_delivery_rules_by_keyword(self, keyword: str, user_id: int = None):
         """根据关键字获取匹配的发货规则"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
+                
+                query_params = []
+                user_condition = ""
+                if user_id is not None:
+                    user_condition = " AND dr.user_id = ? "
+                    query_params.append(user_id)
+                
+                query_params.extend([keyword, keyword, keyword])
+                
                 # 使用更灵活的匹配方式：既支持商品内容包含关键字，也支持关键字包含在商品内容中
-                cursor.execute('''
+                sql = f'''
                 SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
@@ -3388,7 +3397,7 @@ class DBManager:
                        c.is_multi_spec, c.spec_name, c.spec_value
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
+                WHERE dr.enabled = 1 AND c.enabled = 1 {user_condition}
                 AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
                 ORDER BY
                     CASE
@@ -3396,7 +3405,8 @@ class DBManager:
                         ELSE LENGTH(dr.keyword) / 2
                     END DESC,
                     dr.id ASC
-                ''', (keyword, keyword, keyword))
+                '''
+                cursor.execute(sql, tuple(query_params))
 
                 rules = []
                 for row in cursor.fetchall():
@@ -3550,15 +3560,21 @@ class DBManager:
             except Exception as e:
                 logger.error(f"更新发货次数失败: {e}")
 
-    def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None, spec_value: str = None):
+    def get_delivery_rules_by_keyword_and_spec(self, keyword: str, spec_name: str = None, spec_value: str = None, user_id: int = None):
         """根据关键字和规格信息获取匹配的发货规则（支持多规格）"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
 
+                user_condition = ""
+                params_prefix = []
+                if user_id is not None:
+                    user_condition = " AND dr.user_id = ? "
+                    params_prefix.append(user_id)
+
                 # 优先匹配：卡券名称+规格名称+规格值
                 if spec_name and spec_value:
-                    cursor.execute('''
+                    sql_spec = f'''
                     SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times,
                            c.name as card_name, c.type as card_type, c.api_config,
@@ -3567,7 +3583,7 @@ class DBManager:
                            c.is_multi_spec, c.spec_name, c.spec_value
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
-                    WHERE dr.enabled = 1 AND c.enabled = 1
+                    WHERE dr.enabled = 1 AND c.enabled = 1 {user_condition}
                     AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
                     AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
                     ORDER BY
@@ -3576,7 +3592,8 @@ class DBManager:
                             ELSE LENGTH(dr.keyword) / 2
                         END DESC,
                         dr.delivery_times ASC
-                    ''', (keyword, keyword, spec_name, spec_value, keyword))
+                    '''
+                    cursor.execute(sql_spec, tuple(params_prefix + [keyword, keyword, spec_name, spec_value, keyword]))
 
                     rules = []
                     for row in cursor.fetchall():
@@ -3616,7 +3633,7 @@ class DBManager:
                         return rules
 
                 # 兜底匹配：仅卡券名称
-                cursor.execute('''
+                sql_fallback = f'''
                 SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                        dr.description, dr.delivery_times,
                        c.name as card_name, c.type as card_type, c.api_config,
@@ -3625,7 +3642,7 @@ class DBManager:
                        c.is_multi_spec, c.spec_name, c.spec_value
                 FROM delivery_rules dr
                 LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
+                WHERE dr.enabled = 1 AND c.enabled = 1 {user_condition}
                 AND (? LIKE '%' || dr.keyword || '%' OR dr.keyword LIKE '%' || ? || '%')
                 AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
                 ORDER BY
@@ -3634,7 +3651,8 @@ class DBManager:
                         ELSE LENGTH(dr.keyword) / 2
                     END DESC,
                     dr.delivery_times ASC
-                ''', (keyword, keyword, keyword))
+                '''
+                cursor.execute(sql_fallback, tuple(params_prefix + [keyword, keyword, keyword]))
 
                 rules = []
                 for row in cursor.fetchall():
