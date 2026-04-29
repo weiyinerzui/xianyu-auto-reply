@@ -517,7 +517,7 @@ export function Accounts() {
     setAiSettingsLoading(true)
     try {
       const settings = await getAIReplySettings(account.id)
-      setAiEnabled(settings.enabled ?? settings.ai_enabled ?? false)
+      setAiEnabled(settings.ai_enabled ?? settings.enabled ?? false)
       setAiMaxDiscountPercent(settings.max_discount_percent ?? 10)
       setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
       setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
