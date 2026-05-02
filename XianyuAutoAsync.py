@@ -450,14 +450,14 @@ class XianyuLive:
             self.cookie_refresh_task = None
             logger.info(f"【{self.cookie_id}】后台任务引用已全部重置")
 
-    def _calculate_retry_delay(self, error_msg: str) -> int:
+    def _calculate_retry_delay(self, error_msg: str, error_type: str = "") -> int:
         """根据错误类型和失败次数计算重试延迟"""
         # WebSocket意外断开 - 短延迟
         if "no close frame received or sent" in error_msg:
             return min(3 * self.connection_failures, 15)
         
         # 网络连接问题 - 长延迟
-        elif "Connection refused" in error_msg or "timeout" in error_msg.lower():
+        elif "Connection refused" in error_msg or "timeout" in error_msg.lower() or "Timeout" in error_type:
             return min(10 * self.connection_failures, 60)
         
         # 其他未知错误 - 中等延迟
@@ -6869,11 +6869,20 @@ class XianyuLive:
         websockets_version = getattr(websockets, '__version__', '未知')
         logger.warning(f"websockets库版本: {websockets_version}")
 
+        # happy_eyeballs_delay: IPv6 尝试 0.25s 后并行启动 IPv4 连接 (RFC 8305)
+        # 解决 IPv6 不通时必须等所有 IPv6 超时才 fallback 到 IPv4 的问题
+        # open_timeout: 握手总超时，默认 10s 在 IPv6 不通时不够用
+        extra_kwargs = {
+            'happy_eyeballs_delay': 0.25,
+            'open_timeout': 30,
+        }
+
         try:
             # 尝试使用extra_headers参数
             return websockets.connect(
                 self.base_url,
-                extra_headers=headers
+                extra_headers=headers,
+                **extra_kwargs
             )
         except Exception as e:
             # 捕获所有异常类型，不仅仅是TypeError
@@ -6886,7 +6895,8 @@ class XianyuLive:
                 try:
                     return websockets.connect(
                         self.base_url,
-                        additional_headers=headers
+                        additional_headers=headers,
+                        **extra_kwargs
                     )
                 except Exception as e2:
                     error_msg2 = self._safe_str(e2)
@@ -6895,7 +6905,7 @@ class XianyuLive:
                     if "additional_headers" in error_msg2 or "unexpected keyword argument" in error_msg2:
                         # 如果都不支持，则不传递headers
                         logger.warning("websockets库不支持headers参数，使用基础连接模式")
-                        return websockets.connect(self.base_url)
+                        return websockets.connect(self.base_url, **extra_kwargs)
                     else:
                         raise e2
             else:
@@ -8093,7 +8103,7 @@ class XianyuLive:
                         return  # 退出当前连接循环，等待被取消
 
                     # 计算重试延迟
-                    retry_delay = self._calculate_retry_delay(error_msg)
+                    retry_delay = self._calculate_retry_delay(error_msg, error_type)
                     logger.warning(f"【{self.cookie_id}】将在 {retry_delay} 秒后重试连接...")
 
                     try:

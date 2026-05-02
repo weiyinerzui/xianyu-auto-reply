@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 闲鱼滑块验证 - 增强反检测版本
@@ -243,12 +243,6 @@ strategy_stats = RetryStrategyStats()
 
 # 滑块验证策略配置
 SLIDER_STRATEGIES = {
-    'ultra_fast': {
-        'steps_range': [6, 12],        # 极少步数，模拟极速滑动
-        'delay_range': [0.002, 0.008], # 极短延迟
-        'overshoot_range': [1.02, 1.05], # 极小超调，确保触发回拉
-        'description': '极速模式'
-    },
     'fast': {
         'steps_range': [8, 12],        # 较少步数
         'delay_range': [0.005, 0.015], # 较短延迟
@@ -761,17 +755,12 @@ class XianyuSliderStealth:
         ]
         
         # 随机选择用户代理
-        # 更新至更新的Chrome版本，与请求头中的Chrome/139保持一致
         user_agents = [
-            # Chrome 139 (最新，与API请求头匹配)
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            # Chrome 138
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-            # Chrome 137
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-            # Mac 版本
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         ]
         
         window_size = random.choice(window_sizes)
@@ -1236,12 +1225,6 @@ class XianyuSliderStealth:
         Args:
             distance: 滑动距离
             strategy: 策略类型 ('fast', 'normal', 'slow')
-            
-        改进点:
-        1. 添加终点随机偏移，避免精确落点 (+3~8px)
-        2. 增强Y轴波动，模拟人手自然偏移
-        3. 添加overshoot后回拉行为
-        4. 增加微观抖动
         """
         trajectory = []
         
@@ -1252,16 +1235,9 @@ class XianyuSliderStealth:
         overshoot_range = strategy_config['overshoot_range']
         description = strategy_config['description']
         
-        # 🔑 关键改进1: 极小的终点随机偏移，保证落点准确
-        # 阿里风控对落点偏差容忍度很低，超过3px容易被拦截
-        endpoint_offset = random.uniform(-1.5, 1.5)
-        
         # 计算目标距离（含超调）
         overshoot = random.uniform(*overshoot_range)
-        
-        # 🔑 关键改进2: 计算包含偏移的目标距离
-        base_target = distance + endpoint_offset
-        target_distance = base_target * overshoot
+        target_distance = distance * overshoot
         
         # 随机步数
         steps = random.randint(*steps_range)
@@ -1269,24 +1245,7 @@ class XianyuSliderStealth:
         # 基础延迟
         base_delay = random.uniform(*delay_range)
         
-        # 🔑 关键改进3: Y轴波动幅度随进度变化（开始稳定，中间波动大，结尾稳定）
-        def get_y_amplitude(progress, strategy):
-            """根据进度和策略计算Y轴波动幅度"""
-            # 使用正弦波创建波动包络
-            wave_envelope = math.sin(progress * math.pi)  # 0->1->0
-            
-            if strategy == 'slow':
-                base_amp = random.uniform(2, 6)
-            elif strategy == 'normal':
-                base_amp = random.uniform(1.5, 4)
-            else:
-                base_amp = random.uniform(1, 2.5)
-            
-            return base_amp * (0.3 + 0.7 * wave_envelope)
-        
         # 生成轨迹点 - 使用平滑加速曲线
-        cumulative_y = 0  # 累积Y偏移，模拟手的渐进偏移
-        
         for i in range(steps):
             progress = (i + 1) / steps
             
@@ -1306,49 +1265,20 @@ class XianyuSliderStealth:
             
             x = target_distance * min(eased_progress, 1.0)
             
-            # 🔑 关键改进4: 增强Y轴波动（使用累积偏移+微观抖动）
-            y_amplitude = get_y_amplitude(progress, strategy)
-            y_jitter = random.uniform(-y_amplitude, y_amplitude)
-            
-            # 添加渐进偏移趋势（手会慢慢向下或向上偏）
-            if i == 0:
-                cumulative_y = random.uniform(-0.5, 0.5)
+            # Y轴抖动（慢速策略抖动更大，更像人类）
+            if strategy == 'slow':
+                y = random.uniform(-3, 5)
+            elif strategy == 'normal':
+                y = random.uniform(-2, 4)
             else:
-                cumulative_y += random.uniform(-0.15, 0.15)
-                cumulative_y = max(-3, min(3, cumulative_y))  # 限制范围
+                y = random.uniform(0, 2)
             
-            y = y_jitter + cumulative_y
-            
-            # 🔑 关键改进5: 添加速度微变化（模拟手的不稳定）
-            speed_factor = random.uniform(0.85, 1.15)
-            delay = base_delay * speed_factor
-            
-            # 🔑 关键改进6: 在最后20%区间添加微观校正动作
-            if progress > 0.8:
-                # 模拟人类接近终点时的精细调整
-                micro_adjust = random.uniform(-2, 2)
-                x += micro_adjust
-                delay *= random.uniform(1.2, 1.5)  # 最后阶段放慢
+            # 延迟（添加随机变化）
+            delay = base_delay * random.uniform(0.8, 1.2)
             
             trajectory.append((x, y, delay))
         
-        # 🔑 关键改进7: 添加overshoot后的回拉轨迹点（只要发生超调，强制回拉）
-        if overshoot > 1.02:  # 只要超调超过2%，强制回拉，不使用概率
-            # 添加2-4个回拉点
-            num_correction_steps = random.randint(2, 4)
-            last_x = trajectory[-1][0]
-            target_final = base_target  # 回拉到目标位置附近
-            
-            for j in range(num_correction_steps):
-                correction_progress = (j + 1) / num_correction_steps
-                # 从超调位置回拉到目标
-                x = last_x - (last_x - target_final) * correction_progress
-                y = random.uniform(-2, 2) + cumulative_y * (1 - correction_progress)
-                delay = base_delay * random.uniform(1.5, 2.5)  # 回拉时放慢
-                trajectory.append((x, y, delay))
-        
-        actual_endpoint = trajectory[-1][0] if trajectory else 0
-        logger.info(f"【{self.pure_user_id}】{description}：{len(trajectory)}步，超调{(overshoot-1)*100:.0f}%，终点偏移{endpoint_offset:+.1f}px，实际终点{actual_endpoint:.1f}px")
+        logger.info(f"【{self.pure_user_id}】{description}：{len(trajectory)}步，超调{(overshoot-1)*100:.0f}%")
         return trajectory
     
     def generate_human_trajectory(self, distance: float, strategy: str = 'normal'):
@@ -2372,15 +2302,14 @@ class XianyuSliderStealth:
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
         
         策略说明：
-            - 第1次尝试: ultra_fast (极速模式，历史成功率最高)
-            - 第2次尝试: fast (快速模式)
-            - 第3次尝试: normal (正常模式)
-            - 第4次尝试: slow (谨慎模式)
+            - 第1次尝试: fast (快速模式)
+            - 第2次尝试: normal (正常模式)
+            - 第3次尝试: slow (谨慎模式)
         """
         failure_records = []
         
         # 定义每次尝试使用的策略
-        strategy_sequence = ['ultra_fast', 'fast', 'normal', 'slow']
+        strategy_sequence = ['fast', 'normal', 'slow']
         
         for attempt in range(1, max_retries + 1):
             try:
