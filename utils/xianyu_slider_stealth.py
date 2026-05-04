@@ -246,7 +246,7 @@ SLIDER_STRATEGIES = {
     'ultra_fast': {
         'steps_range': [6, 12],        # 极少步数，模拟极速滑动
         'delay_range': [0.002, 0.008], # 极短延迟
-        'overshoot_range': [1.02, 1.05], # 极小超调，确保触发回拉
+        'overshoot_range': [1.03, 1.06], # 收紧超调，避免过冲触发风控（A3）
         'description': '极速模式'
     },
     'fast': {
@@ -270,7 +270,12 @@ SLIDER_STRATEGIES = {
 }
 
 class XianyuSliderStealth:
-    
+    # B2改动：全局滑块验证冷却锁，跨实例共享
+    # 目的：相邻两次滑块验证之间强制至少 15s 间隔，避免连触风控
+    _global_slider_cooldown_lock = threading.Lock()
+    _global_last_slider_finish_ts = 0.0
+    _GLOBAL_SLIDER_COOLDOWN_SEC = 15.0
+
     def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True):
         self.user_id = user_id
         self.enable_learning = enable_learning
@@ -1254,7 +1259,8 @@ class XianyuSliderStealth:
         
         # 🔑 关键改进1: 极小的终点随机偏移，保证落点准确
         # 阿里风控对落点偏差容忍度很低，超过3px容易被拦截
-        endpoint_offset = random.uniform(-1.5, 1.5)
+        # A4改动：从 ±1.5 收紧到 ±1.0，进一步降低落点偏差被拦截的概率
+        endpoint_offset = random.uniform(-1.0, 1.0)
         
         # 计算目标距离（含超调）
         overshoot = random.uniform(*overshoot_range)
@@ -1311,11 +1317,13 @@ class XianyuSliderStealth:
             y_jitter = random.uniform(-y_amplitude, y_amplitude)
             
             # 添加渐进偏移趋势（手会慢慢向下或向上偏）
+            # A2改动：累积 Y 偏移从 ±3 收紧到 ±1.2，降低轨迹异常识别风险
+            # 步长从 ±0.15 收紧到 ±0.08，保持平滑的同时避免累积过大
             if i == 0:
                 cumulative_y = random.uniform(-0.5, 0.5)
             else:
-                cumulative_y += random.uniform(-0.15, 0.15)
-                cumulative_y = max(-3, min(3, cumulative_y))  # 限制范围
+                cumulative_y += random.uniform(-0.08, 0.08)
+                cumulative_y = max(-1.2, min(1.2, cumulative_y))  # 限制范围 ±1.2px
             
             y = y_jitter + cumulative_y
             
@@ -2365,6 +2373,36 @@ class XianyuSliderStealth:
             return {}
     
     def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
+        """B2: 带全局 15s 冷却的滑块验证入口
+
+        该包装确保跨实例两次滑块验证之间至少间隔 _GLOBAL_SLIDER_COOLDOWN_SEC 秒，
+        避免短时间内重复触发风控。真正的验证逻辑在 _solve_slider_impl 中。
+        """
+        import time as _time
+        # 进入前：等待冷却
+        with XianyuSliderStealth._global_slider_cooldown_lock:
+            last_ts = XianyuSliderStealth._global_last_slider_finish_ts
+            now = _time.time()
+            elapsed = now - last_ts
+            cooldown = XianyuSliderStealth._GLOBAL_SLIDER_COOLDOWN_SEC
+            if last_ts > 0 and elapsed < cooldown:
+                wait = cooldown - elapsed
+                logger.info(
+                    f"【{self.pure_user_id}】滑块全局冷却中，等待 {wait:.1f}s 后再验证（距上次结束 {elapsed:.1f}s）"
+                )
+            else:
+                wait = 0.0
+        if wait > 0:
+            _time.sleep(wait)
+
+        try:
+            return self._solve_slider_impl(max_retries=max_retries, fast_mode=fast_mode)
+        finally:
+            # 无论成功/失败都刷新完成时间戳，防止立即再触发
+            with XianyuSliderStealth._global_slider_cooldown_lock:
+                XianyuSliderStealth._global_last_slider_finish_ts = _time.time()
+
+    def _solve_slider_impl(self, max_retries: int = 3, fast_mode: bool = False):
         """处理滑块验证（自适应策略模式）
         
         Args:
@@ -2380,7 +2418,9 @@ class XianyuSliderStealth:
         failure_records = []
         
         # 定义每次尝试使用的策略
-        strategy_sequence = ['ultra_fast', 'fast', 'normal', 'slow']
+        # A1改动：前3次全部使用 ultra_fast（历史成功率最高），第4次 fast 兜底
+        # 理由：日志显示 fast/normal/slow 多次切换反而让风控更警惕，集中使用成功率最高的策略
+        strategy_sequence = ['ultra_fast', 'ultra_fast', 'ultra_fast', 'fast']
         
         for attempt in range(1, max_retries + 1):
             try:

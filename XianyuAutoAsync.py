@@ -664,6 +664,9 @@ class XianyuLive:
         self.last_token_refresh_time = 0
         self.current_token = None
         self.token_refresh_task = None
+        # B1/B3: 指数退避 + 间隔抖动相关状态
+        self._token_failure_count = 0         # 连续失败计数，用于指数退避
+        self._TOKEN_BACKOFF_LADDER = [5, 30, 120, 600, 1800]  # 单位：秒
         self.connection_restart_flag = False  # 连接重启标志
 
         # 通知防重复机制
@@ -5168,6 +5171,8 @@ class XianyuLive:
                         logger.info("Token即将过期，准备刷新...")
                         new_token = await self.refresh_token()
                         if new_token:
+                            # B1: 刷新成功，清零失败计数
+                            self._token_failure_count = 0
                             logger.info(f"【{self.cookie_id}】Token刷新成功，将关闭WebSocket以使用新Token重连")
                             
                             # Token刷新成功后，需要关闭WebSocket连接，让它用新Token重新连接
@@ -5188,20 +5193,39 @@ class XianyuLive:
                             logger.info(f"【{self.cookie_id}】Token刷新完成，WebSocket将使用新Token重新连接")
                             break
                         else:
-                            # 根据上一次刷新状态决定日志级别（冷却/已重启为正常情况）
-                            if getattr(self, 'last_token_refresh_status', None) in ("skipped_cooldown", "restarted_after_cookie_refresh"):
-                                logger.info(f"【{self.cookie_id}】Token刷新未执行或已重启（正常），将在{self.token_retry_interval // 60}分钟后重试")
+                            # B1改动：指数退避阶梯 5s→30s→120s→600s→1800s，封顶 1800s
+                            # 冷却/已重启等"非失败"状态不计入失败计数
+                            status = getattr(self, 'last_token_refresh_status', None)
+                            is_real_failure = status not in ("skipped_cooldown", "restarted_after_cookie_refresh")
+
+                            if is_real_failure:
+                                idx = min(self._token_failure_count, len(self._TOKEN_BACKOFF_LADDER) - 1)
+                                backoff = self._TOKEN_BACKOFF_LADDER[idx]
+                                self._token_failure_count += 1
+                                logger.error(
+                                    f"【{self.cookie_id}】Token刷新失败（连续第{self._token_failure_count}次），"
+                                    f"将在{backoff}秒后重试（指数退避）"
+                                )
                             else:
-                                logger.error(f"【{self.cookie_id}】Token刷新失败，将在{self.token_retry_interval // 60}分钟后重试")
+                                # 非真实失败，走原有重试间隔，不动失败计数
+                                backoff = self.token_retry_interval
+                                logger.info(
+                                    f"【{self.cookie_id}】Token刷新未执行或已重启（正常），"
+                                    f"将在{backoff // 60}分钟后重试"
+                                )
 
                             # 清空当前token，确保下次重试时重新获取
                             self.current_token = None
 
                             # 发送Token刷新失败通知
                             await self.send_token_refresh_notification("Token定时刷新失败，将自动重试", "token_scheduled_refresh_failed")
-                            await self._interruptible_sleep(self.token_retry_interval)
+                            await self._interruptible_sleep(backoff)
                             continue
-                    await self._interruptible_sleep(60)
+                    # B3改动：空闲探测循环也加 ±30min 抖动（以秒为单位：±1800s）
+                    # 原逻辑固定 60s 轮询 refresh_interval；加抖动分散多账号刷新时间点
+                    jitter = random.randint(-1800, 1800)
+                    # 至少保证 30s 基线防止 jitter 把 sleep 压到过短
+                    await self._interruptible_sleep(max(30, 60 + jitter))
                 except asyncio.CancelledError:
                     # 收到取消信号，立即退出循环
                     logger.info(f"【{self.cookie_id}】Token刷新循环收到取消信号，准备退出")
