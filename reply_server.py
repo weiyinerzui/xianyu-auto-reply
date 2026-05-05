@@ -5227,12 +5227,14 @@ async def get_all_items_from_account(request: dict, _: None = Depends(require_au
         from XianyuAutoAsync import XianyuLive
         xianyu_instance = XianyuLive(cookies_str, cookie_id)
 
-        # 调用获取所有商品信息的方法（自动分页）
-        logger.info(f"开始获取账号 {cookie_id} 的所有商品信息")
-        result = await xianyu_instance.get_all_items()
-
-        # 关闭session
-        await xianyu_instance.close_session()
+        try:
+            # 调用获取所有商品信息的方法（自动分页）
+            logger.info(f"开始获取账号 {cookie_id} 的所有商品信息")
+            result = await xianyu_instance.get_all_items()
+        finally:
+            # 关闭session并注销实例
+            await xianyu_instance.close_session()
+            xianyu_instance._unregister_instance()
 
         if result.get('error'):
             logger.error(f"获取商品信息失败: {result['error']}")
@@ -5293,12 +5295,14 @@ async def get_items_by_page(request: dict, _: None = Depends(require_auth)):
         from XianyuAutoAsync import XianyuLive
         xianyu_instance = XianyuLive(cookies_str, cookie_id)
 
-        # 调用获取指定页商品信息的方法
-        logger.info(f"开始获取账号 {cookie_id} 第{page_number}页商品信息（每页{page_size}条）")
-        result = await xianyu_instance.get_item_list_info(page_number, page_size)
-
-        # 关闭session
-        await xianyu_instance.close_session()
+        try:
+            # 调用获取指定页商品信息的方法
+            logger.info(f"开始获取账号 {cookie_id} 第{page_number}页商品信息（每页{page_size}条）")
+            result = await xianyu_instance.get_item_list_info(page_number, page_size)
+        finally:
+            # 关闭session并注销实例
+            await xianyu_instance.close_session()
+            xianyu_instance._unregister_instance()
 
         if result.get('error'):
             logger.error(f"获取商品信息失败: {result['error']}")

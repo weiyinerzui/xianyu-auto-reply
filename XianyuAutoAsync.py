@@ -157,16 +157,35 @@ logger.add(
 
 class XianyuLive:
     # 类级别的锁字典，为每个order_id维护一个锁（用于自动发货）
-    _order_locks = defaultdict(lambda: asyncio.Lock())
+    _order_locks = {}
     # 记录锁的最后使用时间，用于清理
     _lock_usage_times = {}
     # 记录锁的持有状态和释放时间 {lock_key: {'locked': bool, 'release_time': float, 'task': asyncio.Task}}
     _lock_hold_info = {}
 
     # 独立的锁字典，用于订单详情获取（不使用延迟锁机制）
-    _order_detail_locks = defaultdict(lambda: asyncio.Lock())
+    _order_detail_locks = {}
     # 记录订单详情锁的使用时间
     _order_detail_lock_times = {}
+
+    # Playwright 并发信号量，防止多个账号同时启动浏览器导致内存耗尽
+    _playwright_semaphore = asyncio.Semaphore(1)
+
+    @classmethod
+    def _get_order_lock(cls, lock_key: str) -> asyncio.Lock:
+        """安全获取订单锁，使用时才创建"""
+        if lock_key not in cls._order_locks:
+            cls._order_locks[lock_key] = asyncio.Lock()
+        cls._lock_usage_times[lock_key] = time.time()
+        return cls._order_locks[lock_key]
+
+    @classmethod
+    def _get_order_detail_lock(cls, lock_key: str) -> asyncio.Lock:
+        """安全获取订单详情锁"""
+        if lock_key not in cls._order_detail_locks:
+            cls._order_detail_locks[lock_key] = asyncio.Lock()
+        cls._order_detail_lock_times[lock_key] = time.time()
+        return cls._order_detail_locks[lock_key]
 
     # 商品详情缓存（24小时有效）
     _item_detail_cache = {}  # {item_id: {'detail': str, 'timestamp': float, 'access_time': float}}
@@ -505,6 +524,29 @@ class XianyuLive:
             if expired_confirms:
                 cleaned_total += len(expired_confirms)
                 logger.warning(f"【{self.cookie_id}】清理了 {len(expired_confirms)} 个过期订单确认记录")
+
+            # 清理过期的消息ID
+            expired_msg_ids = [
+                msg_id for msg_id, timestamp in self.processed_message_ids.items()
+                if current_time - timestamp > self.message_expire_time
+            ]
+            for msg_id in expired_msg_ids:
+                del self.processed_message_ids[msg_id]
+            if expired_msg_ids:
+                cleaned_total += len(expired_msg_ids)
+                logger.warning(f"【{self.cookie_id}】清理了 {len(expired_msg_ids)} 个过期消息ID")
+            
+            # 清理已完成的防抖任务引用（释放闭包内存）
+            expired_debounce = [
+                chat_id for chat_id, info in self.message_debounce_tasks.items()
+                if 'task' in info and info['task'] and info['task'].done()
+            ]
+            for chat_id in expired_debounce:
+                del self.message_debounce_tasks[chat_id]
+            if expired_debounce:
+                cleaned_total += len(expired_debounce)
+                logger.warning(f"【{self.cookie_id}】清理了 {len(expired_debounce)} 个已完成的防抖任务")
+
             
             # 只有实际清理了内容才记录总数日志
             if cleaned_total > 0:
@@ -738,8 +780,8 @@ class XianyuLive:
         # 消息去重机制：防止同一条消息被处理多次
         self.processed_message_ids = {}  # 存储已处理的消息ID和时间戳 {message_id: timestamp}
         self.processed_message_ids_lock = asyncio.Lock()  # 消息ID去重的锁
-        self.processed_message_ids_max_size = 10000  # 最大保存10000个消息ID，防止内存泄漏
-        self.message_expire_time = 3600  # 消息过期时间（秒），默认1小时后可以重复回复
+        self.processed_message_ids_max_size = 2000  # 最大保存2000个消息ID，防止内存泄漏 (优化从10000减小)
+        self.message_expire_time = 600  # 消息过期时间（秒），默认10分钟后可以重复回复 (优化从3600减小)
 
         # 初始化订单状态处理器
         self._init_order_status_handler()
@@ -1143,10 +1185,7 @@ class XianyuLive:
                 return
 
             # 获取或创建该订单的锁
-            order_lock = self._order_locks[lock_key]
-
-            # 更新锁的使用时间
-            self._lock_usage_times[lock_key] = time.time()
+            order_lock = self._get_order_lock(lock_key)
 
             # 使用异步锁防止同一订单的并发处理
             async with order_lock:
@@ -1465,7 +1504,7 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】  完整Cookie字符串长度: {len(self.cookies_str)}")
             logger.info(f"【{self.cookie_id}】==========================================")
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(
                     api_url,
                     params=params,
@@ -2636,6 +2675,8 @@ class XianyuLive:
         """使用浏览器获取商品详情"""
         playwright = None
         browser = None
+        # 获取并发信号量
+        await XianyuLive._playwright_semaphore.acquire()
         try:
             from playwright.async_api import async_playwright
 
@@ -2645,6 +2686,8 @@ class XianyuLive:
 
             # 启动浏览器（参照order_detail_fetcher的配置）
             browser_args = [
+                '--js-flags=--max-old-space-size=128',
+                '--renderer-process-limit=1',
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
@@ -2761,6 +2804,8 @@ class XianyuLive:
                     logger.warning(f"Playwright已停止: {item_id}")
             except Exception as e:
                 logger.warning(f"停止playwright时出错: {self._safe_str(e)}")
+            finally:
+                XianyuLive._playwright_semaphore.release()
 
 
     async def save_items_list_to_db(self, items_list):
@@ -3382,7 +3427,7 @@ class XianyuLive:
                 'Referer': 'https://www.goofish.com/',
             }
             
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.get(image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         image_data = await response.read()
@@ -3687,7 +3732,7 @@ class XianyuLive:
                     logger.warning("📱 支持：go-cqhttp (端口5700)、NapCat (端口3000)")
                     return
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 if notification_type in ['go-cqhttp', 'napcat']:
                     # OneBot协议（go-cqhttp / NapCat）
                     endpoint = f"{api_url}/send_private_msg"
@@ -3764,7 +3809,7 @@ class XianyuLive:
                 }
             }
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(webhook_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"钉钉通知发送成功")
@@ -3826,7 +3871,7 @@ class XianyuLive:
             logger.info(f"📱 飞书通知 - 请求数据构建完成")
 
             # 发送POST请求
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(webhook_url, json=data, timeout=10) as response:
                     response_text = await response.text()
                     logger.info(f"📱 飞书通知 - 响应状态: {response.status}")
@@ -3900,7 +3945,7 @@ class XianyuLive:
             logger.info(f"📱 Bark通知 - 请求数据构建完成")
 
             # 发送POST请求
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(api_url, json=data, timeout=10) as response:
                     response_text = await response.text()
                     logger.info(f"📱 Bark通知 - 响应状态: {response.status}")
@@ -4092,7 +4137,7 @@ class XianyuLive:
                 'source': 'xianyu-auto-reply'
             }
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 if http_method == 'POST':
                     async with session.post(webhook_url, json=data, headers=headers, timeout=10) as response:
                         if response.status == 200:
@@ -4131,7 +4176,7 @@ class XianyuLive:
                 }
             }
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(webhook_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"微信通知发送成功")
@@ -4163,7 +4208,7 @@ class XianyuLive:
                 'parse_mode': 'HTML'
             }
 
-            async with aiohttp.ClientSession() as session:
+            async with self._get_shared_session() as session:
                 async with session.post(api_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"Telegram通知发送成功")
@@ -4504,10 +4549,7 @@ class XianyuLive:
     async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None):
         """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）"""
         # 使用独立的订单详情锁，不与自动发货锁冲突
-        order_detail_lock = self._order_detail_locks[order_id]
-
-        # 记录订单详情锁的使用时间
-        self._order_detail_lock_times[order_id] = time.time()
+        order_detail_lock = self._get_order_detail_lock(order_id)
 
         async with order_detail_lock:
             logger.info(f"🔍 【{self.cookie_id}】获取订单详情锁 {order_id}，开始处理...")
@@ -5469,8 +5511,8 @@ class XianyuLive:
                     pause_manager.cleanup_expired_pauses()
                     await asyncio.sleep(0)  # 让出控制权，允许检查取消信号
 
-                    # 清理过期的锁（每5分钟清理一次，保留24小时内的锁）
-                    self.cleanup_expired_locks(max_age_hours=24)
+                    # 清理过期的锁（每5分钟清理一次，保留2小时内的锁，防止内存泄漏）
+                    self.cleanup_expired_locks(max_age_hours=2)
                     await asyncio.sleep(0)  # 让出控制权，允许检查取消信号
 
                     # 清理过期的商品详情缓存
@@ -5729,6 +5771,8 @@ class XianyuLive:
         target_cookie_id = cookie_id or self.cookie_id
         target_user_id = user_id or self.user_id
 
+        # 获取并发信号量
+        await XianyuLive._playwright_semaphore.acquire()
         try:
             import asyncio
             from playwright.async_api import async_playwright
@@ -6099,6 +6143,8 @@ class XianyuLive:
                         logger.warning(f"【{target_cookie_id}】关闭Playwright时出错: {self._safe_str(e)}")
             except Exception as cleanup_e:
                 logger.warning(f"【{target_cookie_id}】清理浏览器资源时出错: {self._safe_str(cleanup_e)}")
+            finally:
+                XianyuLive._playwright_semaphore.release()
 
     async def _refresh_cookies_via_browser_page(self, current_cookies_str: str):
         """使用当前cookie访问指定页面获取真实cookie并更新
@@ -6115,6 +6161,8 @@ class XianyuLive:
         playwright = None
         browser = None
 
+        # 获取并发信号量
+        await XianyuLive._playwright_semaphore.acquire()
         try:
             import asyncio
             from playwright.async_api import async_playwright
@@ -6187,6 +6235,8 @@ class XianyuLive:
 
             # 启动浏览器（参照商品搜索的配置）
             browser_args = [
+                '--js-flags=--max-old-space-size=128',
+                '--renderer-process-limit=1',
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
@@ -6405,25 +6455,27 @@ class XianyuLive:
             triggered_by_refresh_token: 是否由refresh_token方法触发，如果是True则设置browser_cookie_refreshed标志
         """
 
-
         playwright = None
         browser = None
+
+        # 检查是否需要等待扫码登录Cookie刷新的冷却时间（在获取信号量前检查，避免不必要地占用信号量）
+        current_time = time.time()
+        time_since_qr_refresh = current_time - self.last_qr_cookie_refresh_time
+
+        if time_since_qr_refresh < self.qr_cookie_refresh_cooldown:
+            remaining_time = self.qr_cookie_refresh_cooldown - time_since_qr_refresh
+            remaining_minutes = int(remaining_time // 60)
+            remaining_seconds = int(remaining_time % 60)
+
+            logger.info(f"【{self.cookie_id}】扫码登录Cookie刷新冷却中，还需等待 {remaining_minutes}分{remaining_seconds}秒")
+            logger.info(f"【{self.cookie_id}】跳过本次浏览器Cookie刷新")
+            return False
+
+        # 获取并发信号量，防止多账号同时启动浏览器耗尽内存
+        await XianyuLive._playwright_semaphore.acquire()
         try:
             import asyncio
             from playwright.async_api import async_playwright
-
-            # 检查是否需要等待扫码登录Cookie刷新的冷却时间
-            current_time = time.time()
-            time_since_qr_refresh = current_time - self.last_qr_cookie_refresh_time
-
-            if time_since_qr_refresh < self.qr_cookie_refresh_cooldown:
-                remaining_time = self.qr_cookie_refresh_cooldown - time_since_qr_refresh
-                remaining_minutes = int(remaining_time // 60)
-                remaining_seconds = int(remaining_time % 60)
-
-                logger.info(f"【{self.cookie_id}】扫码登录Cookie刷新冷却中，还需等待 {remaining_minutes}分{remaining_seconds}秒")
-                logger.info(f"【{self.cookie_id}】跳过本次浏览器Cookie刷新")
-                return False
 
             logger.info(f"【{self.cookie_id}】开始通过浏览器刷新Cookie...")
             logger.info(f"【{self.cookie_id}】刷新前Cookie长度: {len(self.cookies_str)}")
@@ -6751,6 +6803,8 @@ class XianyuLive:
                         await self._force_close_resources(browser, playwright)
                     except Exception:
                         pass
+            finally:
+                XianyuLive._playwright_semaphore.release()
 
     async def _async_close_browser(self, browser, playwright):
         """异步关闭：正常关闭，超时后强制关闭"""
@@ -6977,6 +7031,13 @@ class XianyuLive:
             )
         except Exception:
             return False
+
+    @asynccontextmanager
+    async def _get_shared_session(self):
+        """获取共享的 aiohttp Session，如果不存在则创建"""
+        if not getattr(self, 'session', None):
+            await self.create_session()
+        yield self.session
 
     async def create_session(self):
         """创建aiohttp session"""

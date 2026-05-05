@@ -33,6 +33,8 @@ class AIReplyEngine:
         # 用于控制同一chat_id消息的串行处理
         self._chat_locks = {}
         self._chat_locks_lock = threading.Lock()
+        self._chat_lock_times = {}  # 新增: 记录每个锁的最后使用时间
+        self._max_chat_locks = 500  # 新增: 最大锁数量
     
     def _init_default_prompts(self):
         """初始化默认提示词"""
@@ -325,8 +327,26 @@ class AIReplyEngine:
         """获取指定chat_id的锁，如果不存在则创建"""
         with self._chat_locks_lock:
             if chat_id not in self._chat_locks:
+                # 超过最大数量时，清理最旧的一半
+                if len(self._chat_locks) >= self._max_chat_locks:
+                    self._cleanup_old_chat_locks()
                 self._chat_locks[chat_id] = threading.Lock()
+            self._chat_lock_times[chat_id] = time.time()
             return self._chat_locks[chat_id]
+            
+    def _cleanup_old_chat_locks(self):
+        """清理最旧的聊天锁"""
+        import time
+        if not self._chat_lock_times:
+            return
+        sorted_locks = sorted(self._chat_lock_times.items(), key=lambda x: x[1])
+        remove_count = len(sorted_locks) // 2
+        for chat_id, _ in sorted_locks[:remove_count]:
+            lock = self._chat_locks.get(chat_id)
+            if lock and not lock.locked():  # 只清理未被持有的锁
+                del self._chat_locks[chat_id]
+                del self._chat_lock_times[chat_id]
+        logger.info(f"清理了旧聊天锁，当前锁数量: {len(self._chat_locks)}")
     
     def generate_reply(self, message: str, item_info: dict, chat_id: str,
                       cookie_id: str, user_id: str, item_id: str,
