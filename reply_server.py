@@ -13,7 +13,8 @@ import json
 import os
 import re
 import uvicorn
-import pandas as pd
+import openpyxl
+from openpyxl.styles import PatternFill
 import io
 import asyncio
 from collections import defaultdict
@@ -3609,7 +3610,7 @@ def export_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current
         # 获取关键词数据（包含类型信息）
         keywords = db_manager.get_keywords_with_type(cid)
 
-        # 创建DataFrame，只导出文本类型的关键词
+        # 收集文本类型的关键词数据
         data = []
         for keyword_data in keywords:
             # 只导出文本类型的关键词
@@ -3620,40 +3621,33 @@ def export_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current
                     '关键词内容': keyword_data['reply']
                 })
 
-        # 如果没有数据，创建空的DataFrame但保留列名（作为模板）
-        if not data:
-            df = pd.DataFrame(columns=['关键词', '商品ID', '关键词内容'])
+        # 使用openpyxl创建Excel文件（替代pandas，节省~80MB内存）
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = '关键词数据'
+
+        # 写入表头
+        headers = ['关键词', '商品ID', '关键词内容']
+        ws.append(headers)
+
+        if data:
+            # 写入数据行
+            for row_data in data:
+                ws.append([row_data['关键词'], row_data['商品ID'], row_data['关键词内容']])
         else:
-            df = pd.DataFrame(data)
+            # 空模板：添加示例数据
+            ws.append(['你好', '', '您好！欢迎咨询，有什么可以帮助您的吗？'])
+            ws.append(['价格', '123456', '这个商品的价格是99元，现在有优惠活动哦！'])
+            ws.append(['发货', '', '我们会在24小时内发货，请耐心等待。'])
 
-        # 创建Excel文件
+            # 设置示例行的样式（浅灰色背景）
+            gray_fill = PatternFill(start_color='F0F0F0', end_color='F0F0F0', fill_type='solid')
+            for row in range(2, 5):
+                for col in range(1, 4):
+                    ws.cell(row=row, column=col).fill = gray_fill
+
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='关键词数据', index=False)
-
-            # 如果是空模板，添加一些示例说明
-            if data == []:
-                worksheet = writer.sheets['关键词数据']
-                # 添加示例数据作为注释（从第2行开始）
-                worksheet['A2'] = '你好'
-                worksheet['B2'] = ''
-                worksheet['C2'] = '您好！欢迎咨询，有什么可以帮助您的吗？'
-
-                worksheet['A3'] = '价格'
-                worksheet['B3'] = '123456'
-                worksheet['C3'] = '这个商品的价格是99元，现在有优惠活动哦！'
-
-                worksheet['A4'] = '发货'
-                worksheet['B4'] = ''
-                worksheet['C4'] = '我们会在24小时内发货，请耐心等待。'
-
-                # 设置示例行的样式（浅灰色背景）
-                from openpyxl.styles import PatternFill
-                gray_fill = PatternFill(start_color='F0F0F0', end_color='F0F0F0', fill_type='solid')
-                for row in range(2, 5):
-                    for col in range(1, 4):
-                        worksheet.cell(row=row, column=col).fill = gray_fill
-
+        wb.save(output)
         output.seek(0)
 
         # 生成文件名（使用URL编码处理中文）
@@ -3697,15 +3691,28 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
         raise HTTPException(status_code=400, detail="请上传Excel文件(.xlsx或.xls)")
 
     try:
-        # 读取Excel文件
+        # 读取Excel文件（使用openpyxl替代pandas，节省~80MB内存）
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents))
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(contents), read_only=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Excel文件格式错误，无法解析")
 
-        # 检查必要的列
+        ws = wb.active
+        if ws is None or ws.max_row is None or ws.max_row < 1:
+            wb.close()
+            raise HTTPException(status_code=400, detail="Excel文件为空")
+
+        # 读取表头
+        header_row = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         required_columns = ['关键词', '商品ID', '关键词内容']
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        missing_columns = [col for col in required_columns if col not in header_row]
         if missing_columns:
+            wb.close()
             raise HTTPException(status_code=400, detail=f"Excel文件缺少必要的列: {', '.join(missing_columns)}")
+
+        # 获取列索引
+        col_indices = {col: header_row.index(col) for col in required_columns}
 
         # 获取现有的文本类型关键词（用于比较更新/新增）
         existing_keywords = db_manager.get_keywords_with_type(cid)
@@ -3719,24 +3726,27 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
                 key = f"{keyword}|{item_id or ''}"
                 existing_dict[key] = (keyword, reply, item_id)
 
-        # 处理导入数据
-        import_data = []
-        update_count = 0
-        add_count = 0
-
         def clean_cell_value(value):
             """清理单元格值，处理数字转字符串时的 .0 后缀问题"""
-            if pd.isna(value):
+            if value is None:
                 return ''
             # 如果是数字类型，先转为整数（如果是整数值）再转字符串
             if isinstance(value, float) and value == int(value):
                 return str(int(value)).strip()
             return str(value).strip()
 
-        for index, row in df.iterrows():
-            keyword = clean_cell_value(row['关键词'])
-            item_id = clean_cell_value(row['商品ID']) or None
-            reply = clean_cell_value(row['关键词内容'])
+        # 处理导入数据
+        import_data = []
+        update_count = 0
+        add_count = 0
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or len(row) <= max(col_indices.values()):
+                continue
+
+            keyword = clean_cell_value(row[col_indices['关键词']])
+            item_id = clean_cell_value(row[col_indices['商品ID']]) or None
+            reply = clean_cell_value(row[col_indices['关键词内容']])
 
             if not keyword:
                 continue  # 跳过没有关键词的行
@@ -3751,6 +3761,8 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
                 add_count += 1
 
             import_data.append((keyword, reply, item_id))
+
+        wb.close()
 
         if not import_data:
             raise HTTPException(status_code=400, detail="Excel文件中没有有效的关键词数据")
@@ -3769,13 +3781,12 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
             "updated": update_count
         }
 
-    except pd.errors.EmptyDataError:
-        raise HTTPException(status_code=400, detail="Excel文件为空")
-    except pd.errors.ParserError:
-        raise HTTPException(status_code=400, detail="Excel文件格式错误")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"导入关键词失败: {e}")
         raise HTTPException(status_code=500, detail=f"导入关键词失败: {str(e)}")
+
 
 
 @app.post("/keywords/{cid}/image")

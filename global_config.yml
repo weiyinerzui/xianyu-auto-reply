@@ -23,8 +23,9 @@ ITEM_DETAIL:
     enabled: true  # 是否启用自动获取商品详情
     api_url: https://selfapi.zhinianboke.com/api/getItemDetail  # 外部API地址
     timeout: 30  # 请求超时时间（秒）
-    max_concurrent: 3  # 最大并发请求数
+    max_concurrent: 1  # 最大并发请求数（与 _playwright_semaphore 一致，防止多个 Chromium 同时启动）
     retry_delay: 0.5  # 请求间隔（秒）
+    browser_fallback_enabled: true  # 是否启用浏览器 fallback（关闭可省 200-400MB 内存抖动）
 COOKIES:
   last_update_time: ''
   value: ''
@@ -58,8 +59,8 @@ MANUAL_MODE:
   timeout: 3600
   toggle_keywords: []
 MESSAGE_EXPIRE_TIME: 300000
-TOKEN_REFRESH_INTERVAL: 3600  # 从3600秒(1小时)增加到72000秒(20小时)
-TOKEN_RETRY_INTERVAL: 600    # 从300秒(5分钟)增加到7200秒(2小时)
+TOKEN_REFRESH_INTERVAL: 28800  # 8小时刷新一次Token，减少Chromium冷启动频次
+TOKEN_RETRY_INTERVAL: 600     # Token刷新失败后10分钟重试
 SLIDER_VERIFICATION:
   max_concurrent: 3  # 滑块验证最大并发数
   wait_timeout: 60   # 等待排队超时时间（秒）

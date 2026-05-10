@@ -688,7 +688,7 @@ class XianyuSearcher:
             raise Exception("Playwright 未安装，无法使用真实搜索功能")
 
         if not self.browser:
-            playwright = await async_playwright().start()
+            self.playwright = await async_playwright().start()
             
             # 设置持久化数据目录（保存缓存、cookies等）
             import tempfile
@@ -722,7 +722,7 @@ class XianyuSearcher:
             
             # 使用 launch_persistent_context 实现跨会话的缓存持久化
             # 这样通过一次滑块验证后，下次搜索可以复用缓存，避免再次出现滑块
-            self.context = await playwright.chromium.launch_persistent_context(
+            self.context = await self.playwright.chromium.launch_persistent_context(
                 user_data_dir,  # 第一个参数是用户数据目录，用于持久化
                 headless=True,  # 无头模式，后台运行
                 args=browser_args,
@@ -751,16 +751,44 @@ class XianyuSearcher:
     async def close_browser(self):
         """关闭浏览器（持久化上下文会自动保存缓存和cookies）"""
         try:
+            browser_to_kill = self.browser
+            
             if self.page:
-                await self.page.close()
+                try:
+                    await asyncio.wait_for(self.page.close(), timeout=3.0)
+                except:
+                    pass
                 self.page = None
-            # 注意：使用 persistent_context 时，关闭 context 会自动保存所有数据
+                
             if self.context:
-                await self.context.close()
+                try:
+                    await asyncio.wait_for(self.context.close(), timeout=5.0)
+                except:
+                    pass
                 self.context = None
-            # persistent_context 的 browser 会在 context 关闭时自动关闭
-            # 不需要单独关闭 browser
+                
             self.browser = None
+            
+            if hasattr(self, 'playwright') and self.playwright:
+                try:
+                    await asyncio.wait_for(self.playwright.stop(), timeout=5.0)
+                except Exception as e:
+                    logger.warning(f"停止playwright时出错或超时: {e}")
+                    # 强杀进程兜底
+                    try:
+                        import psutil
+                        process = getattr(browser_to_kill, '_process', None) or getattr(browser_to_kill, 'process', None)
+                        if process and getattr(process, 'pid', None):
+                            proc = psutil.Process(process.pid)
+                            for child in proc.children(recursive=True):
+                                try: child.kill()
+                                except: pass
+                            proc.kill()
+                            logger.warning(f"已强制杀死浏览器进程 PID={process.pid}")
+                    except Exception as kill_err:
+                        pass
+                self.playwright = None
+                
             logger.debug("商品搜索器浏览器已关闭（缓存已保存）")
         except Exception as e:
             logger.warning(f"关闭商品搜索器浏览器时出错: {e}")

@@ -59,15 +59,16 @@ class FileLogCollector:
         try:
             from loguru import logger
             
-            # 添加文件输出
+            # 添加文件输出（异步队列 + 块缓冲，减少磁盘I/O）
             logger.add(
                 self.log_file,
                 format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}",
-                level="INFO",  # 从DEBUG改为INFO，减少日志量
+                level="INFO",
                 rotation="10 MB",
-                retention="3 days",  # 从7天改为3天，减少磁盘占用
-                enqueue=False,  # 改为False，避免队列延迟
-                buffering=1     # 行缓冲，立即写入
+                retention="3 days",
+                compression="zip",
+                enqueue=True,    # 异步队列写入，避免阻塞主线程
+                buffering=8192   # 块缓冲（8KB），减少syscall次数
             )
             
             logger.info("文件日志收集器已启动")

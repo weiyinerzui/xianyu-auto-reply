@@ -44,6 +44,7 @@ class OrderDetailFetcher:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self.playwright = None
         self.headless = headless  # 保存headless设置
 
         # 请求头配置
@@ -75,7 +76,7 @@ class OrderDetailFetcher:
 
             logger.info(f"开始初始化浏览器，headless模式: {headless}")
 
-            playwright = await async_playwright().start()
+            self.playwright = await async_playwright().start()
 
             # 启动浏览器（Docker环境优化）
             browser_args = [
@@ -137,7 +138,7 @@ class OrderDetailFetcher:
                 ])
 
             logger.info(f"启动浏览器，参数: {browser_args}")
-            self.browser = await playwright.chromium.launch(
+            self.browser = await self.playwright.chromium.launch(
                 headless=headless,
                 args=browser_args
             )
@@ -625,18 +626,55 @@ class OrderDetailFetcher:
                     pass
                 self.browser = None
 
+            if self.playwright:
+                try:
+                    await self.playwright.stop()
+                except:
+                    pass
+                self.playwright = None
+
         except Exception as e:
             logger.debug(f"强制关闭浏览器过程中的异常（可忽略）: {e}")
 
     async def close(self):
         """关闭浏览器"""
         try:
+            browser_to_kill = self.browser
+            
             if self.page:
-                await self.page.close()
+                try:
+                    await asyncio.wait_for(self.page.close(), timeout=3.0)
+                except:
+                    pass
             if self.context:
-                await self.context.close()
+                try:
+                    await asyncio.wait_for(self.context.close(), timeout=5.0)
+                except:
+                    pass
             if self.browser:
-                await self.browser.close()
+                try:
+                    await asyncio.wait_for(self.browser.close(), timeout=5.0)
+                except:
+                    pass
+                    
+            if self.playwright:
+                try:
+                    await asyncio.wait_for(self.playwright.stop(), timeout=5.0)
+                except Exception as e:
+                    logger.warning(f"停止playwright时出错或超时: {e}")
+                    # 强杀进程兜底
+                    try:
+                        import psutil
+                        process = getattr(browser_to_kill, '_process', None) or getattr(browser_to_kill, 'process', None)
+                        if process and getattr(process, 'pid', None):
+                            proc = psutil.Process(process.pid)
+                            for child in proc.children(recursive=True):
+                                try: child.kill()
+                                except: pass
+                            proc.kill()
+                    except: pass
+                self.playwright = None
+                
             logger.info("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器失败: {e}")

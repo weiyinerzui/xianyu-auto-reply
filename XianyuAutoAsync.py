@@ -2790,20 +2790,30 @@ class XianyuLive:
             logger.error(f"浏览器获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
         finally:
-            # 确保资源被正确清理
+            # 确保资源被正确清理（增加进程强杀兜底）
             try:
                 if browser:
-                    await browser.close()
-                    logger.warning(f"Browser已关闭: {item_id}")
+                    try:
+                        await asyncio.wait_for(browser.close(), timeout=5.0)
+                        logger.warning(f"Browser已关闭: {item_id}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"关闭browser超时，强制杀死进程: {item_id}")
+                        XianyuLive._kill_browser_process(browser)
+                    except Exception as e:
+                        logger.warning(f"关闭browser时出错: {self._safe_str(e)}")
+                        XianyuLive._kill_browser_process(browser)
             except Exception as e:
-                logger.warning(f"关闭browser时出错: {self._safe_str(e)}")
+                logger.warning(f"清理browser资源时出错: {self._safe_str(e)}")
             
             try:
                 if playwright:
-                    await playwright.stop()
-                    logger.warning(f"Playwright已停止: {item_id}")
+                    try:
+                        await asyncio.wait_for(playwright.stop(), timeout=5.0)
+                        logger.warning(f"Playwright已停止: {item_id}")
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"停止playwright时出错或超时: {self._safe_str(e)}")
             except Exception as e:
-                logger.warning(f"停止playwright时出错: {self._safe_str(e)}")
+                logger.warning(f"清理playwright资源时出错: {self._safe_str(e)}")
             finally:
                 XianyuLive._playwright_semaphore.release()
 
@@ -6105,7 +6115,7 @@ class XianyuLive:
             logger.error(f"【{target_cookie_id}】使用扫码cookie获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 确保资源清理
+            # 确保资源清理（增加进程强杀兜底）
             try:
                 # 先关闭浏览器，再关闭Playwright（顺序很重要）
                 if browser:
@@ -6113,15 +6123,11 @@ class XianyuLive:
                         await asyncio.wait_for(browser.close(), timeout=5.0)
                         logger.warning(f"【{target_cookie_id}】浏览器关闭完成")
                     except asyncio.TimeoutError:
-                        logger.warning(f"【{target_cookie_id}】浏览器关闭超时（5秒），资源可能未完全释放")
-                        # 尝试取消浏览器相关的任务
-                        try:
-                            if hasattr(browser, '_connection'):
-                                browser._connection = None
-                        except:
-                            pass
+                        logger.warning(f"【{target_cookie_id}】浏览器关闭超时（5秒），强制杀死进程")
+                        XianyuLive._kill_browser_process(browser)
                     except Exception as e:
                         logger.warning(f"【{target_cookie_id}】关闭浏览器时出错: {self._safe_str(e)}")
+                        XianyuLive._kill_browser_process(browser)
                 
                 # Playwright关闭：使用更短的超时，超时后立即放弃
                 if playwright:
@@ -6131,14 +6137,6 @@ class XianyuLive:
                         logger.warning(f"【{target_cookie_id}】Playwright关闭完成")
                     except asyncio.TimeoutError:
                         logger.warning(f"【{target_cookie_id}】Playwright关闭超时（2秒），进程可能仍在运行")
-                        logger.warning(f"【{target_cookie_id}】提示：如果后续Playwright启动失败，可能需要手动清理残留进程")
-                        # 尝试清理Playwright的内部状态
-                        try:
-                            # 取消可能正在运行的Playwright任务
-                            if hasattr(playwright, '_transport'):
-                                playwright._transport = None
-                        except:
-                            pass
                     except Exception as e:
                         logger.warning(f"【{target_cookie_id}】关闭Playwright时出错: {self._safe_str(e)}")
             except Exception as cleanup_e:
@@ -6411,7 +6409,7 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】使用当前cookie访问指定页面获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 确保资源清理
+            # 确保资源清理（增加进程强杀兜底）
             try:
                 # 先关闭浏览器，再关闭Playwright（顺序很重要）
                 if browser:
@@ -6419,9 +6417,11 @@ class XianyuLive:
                         await asyncio.wait_for(browser.close(), timeout=5.0)
                         logger.warning(f"【{self.cookie_id}】浏览器关闭完成")
                     except asyncio.TimeoutError:
-                        logger.warning(f"【{self.cookie_id}】浏览器关闭超时（5秒），资源可能未完全释放")
+                        logger.warning(f"【{self.cookie_id}】浏览器关闭超时（5秒），强制杀死进程")
+                        XianyuLive._kill_browser_process(browser)
                     except Exception as e:
                         logger.warning(f"【{self.cookie_id}】关闭浏览器时出错: {self._safe_str(e)}")
+                        XianyuLive._kill_browser_process(browser)
                 
                 # Playwright关闭：使用更短的超时，超时后立即放弃
                 if playwright:
@@ -6827,7 +6827,7 @@ class XianyuLive:
             await self._force_close_resources(browser, playwright)
 
     async def _normal_close_resources(self, browser, playwright):
-        """正常关闭资源：浏览器+Playwright短超时关闭"""
+        """正常关闭资源：浏览器+Playwright短超时关闭，超时则强杀进程"""
         try:
             # 先关闭浏览器，再关闭Playwright
             if browser:
@@ -6836,15 +6836,11 @@ class XianyuLive:
                     await asyncio.wait_for(browser.close(), timeout=5.0)
                     logger.info(f"【{self.cookie_id}】浏览器关闭完成")
                 except asyncio.TimeoutError:
-                    logger.warning(f"【{self.cookie_id}】浏览器关闭超时，尝试强制关闭")
-                    try:
-                        # 尝试强制关闭
-                        if hasattr(browser, '_connection'):
-                            browser._connection.dispose()
-                    except Exception:
-                        pass
+                    logger.warning(f"【{self.cookie_id}】浏览器关闭超时，强制杀死进程")
+                    XianyuLive._kill_browser_process(browser)
                 except Exception as e:
                     logger.warning(f"【{self.cookie_id}】关闭浏览器时出错: {e}")
+                    XianyuLive._kill_browser_process(browser)
             
             # 关闭Playwright：使用短超时，如果超时就放弃
             if playwright:
@@ -6904,6 +6900,152 @@ class XianyuLive:
             
         except Exception as e:
             logger.warning(f"【{self.cookie_id}】强制关闭时出现异常（已忽略）: {e}")
+
+    @staticmethod
+    def _kill_browser_process(browser):
+        """强制杀死浏览器进程（当 browser.close() 超时时的最后手段）
+        
+        解决 Chromium 僵尸进程累积导致的内存泄漏问题。
+        """
+        try:
+            import psutil
+            # Playwright browser 对象内部持有进程引用
+            process = getattr(browser, '_process', None) or getattr(browser, 'process', None)
+            if process:
+                pid = getattr(process, 'pid', None)
+                if pid:
+                    try:
+                        proc = psutil.Process(pid)
+                        # 先杀子进程（renderer等），再杀主进程
+                        children = proc.children(recursive=True)
+                        for child in children:
+                            try:
+                                child.kill()
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                        proc.kill()
+                        logger.warning(f"已强制杀死浏览器进程 PID={pid} 及 {len(children)} 个子进程")
+                        return True
+                    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                        logger.warning(f"杀死浏览器进程失败 PID={pid}: {e}")
+                        return False
+        except ImportError:
+            logger.warning("psutil 未安装，无法强制杀死浏览器进程")
+        except Exception as e:
+            logger.warning(f"强制杀死浏览器进程时出错: {e}")
+        return False
+
+    @staticmethod
+    def _get_playwright_browser_args(include_memory_limit: bool = True) -> list:
+        """获取统一的 Playwright 浏览器启动参数
+        
+        将所有调用点的重复 browser_args 集中管理。
+        
+        Args:
+            include_memory_limit: 是否包含内存限制参数（如 --max-old-space-size）
+        """
+        args = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--hide-scrollbars',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--no-pings'
+        ]
+        
+        if include_memory_limit:
+            args.insert(0, '--js-flags=--max-old-space-size=128')
+            args.insert(1, '--renderer-process-limit=1')
+        
+        # Docker 环境额外参数
+        if os.getenv('DOCKER_ENV'):
+            args.extend([
+                '--disable-background-networking',
+                '--disable-client-side-phishing-detection',
+                '--disable-hang-monitor',
+                '--disable-popup-blocking',
+                '--disable-prompt-on-repost',
+                '--disable-web-resources',
+                '--metrics-recording-only',
+                '--safebrowsing-disable-auto-update',
+                '--enable-automation',
+                '--password-store=basic',
+                '--use-mock-keychain'
+            ])
+        
+        return args
+
+    @staticmethod
+    async def _start_playwright_with_docker_fix(cookie_id: str = "unknown"):
+        """启动 Playwright，自动处理 Docker 环境兼容性
+        
+        统一 Docker 环境下的 asyncio 子进程修复逻辑，
+        避免 4 处调用点各自重复实现 DummyChildWatcher。
+        
+        Returns:
+            playwright instance 或 None（启动失败时）
+        """
+        import asyncio as _asyncio
+        from playwright.async_api import async_playwright
+        
+        is_docker = os.getenv('DOCKER_ENV') or os.path.exists('/.dockerenv')
+        
+        if is_docker:
+            logger.info(f"【{cookie_id}】检测到Docker环境，应用asyncio修复")
+            
+            class DummyChildWatcher:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def is_active(self): return True
+                def add_child_handler(self, *args, **kwargs): pass
+                def remove_child_handler(self, *args, **kwargs): pass
+                def attach_loop(self, *args, **kwargs): pass
+                def close(self): pass
+                def __del__(self): pass
+            
+            class DockerEventLoopPolicy(_asyncio.DefaultEventLoopPolicy):
+                def get_child_watcher(self):
+                    return DummyChildWatcher()
+            
+            old_policy = _asyncio.get_event_loop_policy()
+            _asyncio.set_event_loop_policy(DockerEventLoopPolicy())
+            
+            try:
+                playwright = await _asyncio.wait_for(
+                    async_playwright().start(),
+                    timeout=30.0
+                )
+                logger.info(f"【{cookie_id}】Docker环境下Playwright启动成功")
+                return playwright
+            except _asyncio.TimeoutError:
+                logger.error(f"【{cookie_id}】Docker环境下Playwright启动超时")
+                return None
+            finally:
+                _asyncio.set_event_loop_policy(old_policy)
+        else:
+            try:
+                playwright = await _asyncio.wait_for(
+                    async_playwright().start(),
+                    timeout=30.0
+                )
+                return playwright
+            except _asyncio.TimeoutError:
+                logger.error(f"【{cookie_id}】Playwright启动超时")
+                return None
 
     async def send_msg_once(self, toid, item_id, text):
         headers = {

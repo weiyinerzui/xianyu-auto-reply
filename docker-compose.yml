@@ -6,6 +6,8 @@ services:
     image: xianyu-auto-reply:latest
     container_name: xianyu-auto-reply
     restart: unless-stopped
+    # PID 1 reaper：回收 Chromium 僵尸子进程，防止内存泄漏
+    init: true
     # 使用root用户避免权限问题
     user: "0:0"
     # 启用共享内存，解决 Chromium 在 Docker 中崩溃的问题
@@ -56,7 +58,7 @@ services:
       - WEBSOCKET_URL=${WEBSOCKET_URL:-wss://wss-goofish.dingtalk.com/}
       - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-15}
       - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-5}
-      - TOKEN_REFRESH_INTERVAL=${TOKEN_REFRESH_INTERVAL:-3600}
+      - TOKEN_REFRESH_INTERVAL=${TOKEN_REFRESH_INTERVAL:-28800}
       - TOKEN_RETRY_INTERVAL=${TOKEN_RETRY_INTERVAL:-300}
       - MESSAGE_EXPIRE_TIME=${MESSAGE_EXPIRE_TIME:-300000}
 
