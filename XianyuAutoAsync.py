@@ -8,6 +8,7 @@ import random
 from enum import Enum
 from loguru import logger
 import websockets
+from contextlib import asynccontextmanager
 from utils.xianyu_utils import (
     decrypt, generate_mid, generate_uuid, trans_cookies,
     generate_device_id, generate_sign
