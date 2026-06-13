@@ -7151,15 +7151,45 @@ class XianyuLive:
     def is_chat_message(self, message):
         """判断是否为用户聊天消息"""
         try:
-            return (
-                isinstance(message, dict)
-                and "1" in message
-                and isinstance(message["1"], dict)
-                and "10" in message["1"]
-                and isinstance(message["1"]["10"], dict)
-                and "reminderContent" in message["1"]["10"]
-            )
-        except Exception:
+            # 调试日志：打印检查过程
+            logger.debug(f"【is_chat_message】开始检查消息类型")
+            
+            if not isinstance(message, dict):
+                logger.debug(f"【is_chat_message】❌ message 不是字典: {type(message)}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message 是字典")
+            
+            if "1" not in message:
+                logger.debug(f"【is_chat_message】❌ message 中没有 '1' 字段, keys: {list(message.keys())}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message['1'] 存在, type: {type(message['1'])}")
+            
+            if not isinstance(message["1"], dict):
+                logger.debug(f"【is_chat_message】❌ message['1'] 不是字典: {type(message['1'])}")
+                if isinstance(message["1"], list):
+                    logger.debug(f"【is_chat_message】   message['1'] 是列表, 长度: {len(message['1'])}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message['1'] 是字典")
+            
+            if "10" not in message["1"]:
+                logger.debug(f"【is_chat_message】❌ message['1'] 中没有 '10' 字段, keys: {list(message['1'].keys())}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message['1']['10'] 存在, type: {type(message['1']['10'])}")
+            
+            if not isinstance(message["1"]["10"], dict):
+                logger.debug(f"【is_chat_message】❌ message['1']['10'] 不是字典: {type(message['1']['10'])}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message['1']['10'] 是字典")
+            
+            if "reminderContent" not in message["1"]["10"]:
+                logger.debug(f"【is_chat_message】❌ message['1']['10'] 中没有 'reminderContent', keys: {list(message['1']['10'].keys())[:10]}")
+                return False
+            logger.debug(f"【is_chat_message】✓ message['1']['10']['reminderContent'] 存在: {message['1']['10']['reminderContent'][:50]}")
+            
+            logger.debug(f"【is_chat_message】✅ 消息是聊天消息")
+            return True
+        except Exception as e:
+            logger.error(f"【is_chat_message】异常: {self._safe_str(e)}")
             return False
 
     def is_sync_package(self, message_data):
@@ -7351,8 +7381,10 @@ class XianyuLive:
                 # 如果消息处理时间未超过1小时，跳过
                 if time_elapsed < self.message_expire_time:
                     remaining_time = int(self.message_expire_time - time_elapsed)
-                    logger.warning(f"【{self.cookie_id}】消息ID {message_id[:50]}... 已处理过，距离可重复回复还需 {remaining_time} 秒")
-                    return
+                    # 临时禁用去重检查，用于调试
+                    logger.warning(f"【{self.cookie_id}】⚠️ 消息ID {message_id[:50]}... 已处理过，但临时允许重新回复（调试模式）")
+                    # 注释掉原来的 return 语句
+                    # return
                 else:
                     # 超过1小时，可以重新处理
                     logger.info(f"【{self.cookie_id}】消息ID {message_id[:50]}... 已超过 {int(time_elapsed/60)} 分钟，允许重新回复")

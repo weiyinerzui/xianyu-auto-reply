@@ -134,9 +134,30 @@ class AIReplyEngine:
         return is_custom_model and is_dashscope_url
 
     def _is_gemini_api(self, settings: dict) -> bool:
-        """判断是否为Gemini API (通过模型名称)"""
+        """判断是否为Gemini原生API（仅当模型名含gemini且使用Google官方地址时）
+        
+        如果用户配置了第三方代理URL（如七牛云 api.qnaigc.com），
+        即使模型名含 gemini，也应走 OpenAI 兼容路径，而非 Google 原生 API。
+        """
         model_name = settings.get('model_name', '').lower()
-        return 'gemini' in model_name
+        if 'gemini' not in model_name:
+            return False
+        
+        # 检查 base_url 是否指向 Google 官方 API
+        base_url = settings.get('base_url', '').lower().strip()
+        google_official_hosts = [
+            'generativelanguage.googleapis.com',
+            'aiplatform.googleapis.com',
+        ]
+        
+        # base_url 为空或包含 Google 官方域名时，才使用 Gemini 原生 API
+        if not base_url:
+            return True
+        
+        is_google = any(host in base_url for host in google_official_hosts)
+        if not is_google:
+            logger.info(f"模型名含gemini但base_url为第三方代理({base_url})，将使用OpenAI兼容API")
+        return is_google
 
     def _call_dashscope_api(self, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
         """调用DashScope API"""
