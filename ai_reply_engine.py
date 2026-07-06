@@ -281,17 +281,60 @@ class AIReplyEngine:
             logger.error(f"Gemini API 响应格式错误: {result} - {e}")
             raise Exception(f"Gemini API 响应格式错误: {result}")
 
-    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
-        """调用OpenAI兼容API"""
+    def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7, image_urls: list = None) -> str:
+        """调用OpenAI兼容API（支持多模态图片）"""
+        import os
         try:
-            logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
-            response = client.chat.completions.create(
-                model=settings['model_name'],
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            return response.choices[0].message.content.strip()
+            if image_urls:
+                # ===== 有图片：切换到 qnaigc 视觉模型 =====
+                qnaigc_api_key = os.getenv("QNAIGC_API_KEY", "")
+                qnaigc_base_url = os.getenv("QNAIGC_BASE_URL", "https://api.qnaigc.com/v1")
+                qnaigc_model = os.getenv("QNAIGC_VISION_MODEL", "google/gemini-3.5-flash")
+
+                if not qnaigc_api_key:
+                    logger.warning("有图片但未配置 QNAIGC_API_KEY 环境变量，降级到文本模型（不传图片）")
+                    # 降级：用原配置的文本模型，不传图片
+                    logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
+                    response = client.chat.completions.create(
+                        model=settings['model_name'],
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature
+                    )
+                    return response.choices[0].message.content.strip()
+
+                # 构建多模态 messages：把最后一条 user 消息的 content 改为多模态格式
+                multimodal_messages = []
+                for msg in messages:
+                    if msg.get('role') == 'user' and isinstance(msg.get('content'), str):
+                        content = [{"type": "text", "text": msg['content']}]
+                        for url in image_urls:
+                            content.append({"type": "image_url", "image_url": {"url": url}})
+                        multimodal_messages.append({"role": msg['role'], "content": content})
+                    else:
+                        multimodal_messages.append(msg)
+
+                # 临时创建 qnaigc client，用视觉模型
+                vision_client = OpenAI(api_key=qnaigc_api_key, base_url=qnaigc_base_url)
+                logger.info(f"调用视觉模型: model={qnaigc_model}, base_url={qnaigc_base_url}, image_count={len(image_urls)}")
+                response = vision_client.chat.completions.create(
+                    model=qnaigc_model,
+                    messages=multimodal_messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=25  # 视觉模型需要更长超时
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                # ===== 无图片：用原配置（火山方舟 deepseek-3.2 等）=====
+                logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
+                response = client.chat.completions.create(
+                    model=settings['model_name'],
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                return response.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"OpenAI API调用失败: {e}")
             # 如果有详细的错误信息，打印出来
@@ -371,7 +414,7 @@ class AIReplyEngine:
     
     def generate_reply(self, message: str, item_info: dict, chat_id: str,
                       cookie_id: str, user_id: str, item_id: str,
-                      skip_wait: bool = False) -> Optional[str]:
+                      skip_wait: bool = False, image_urls: list = None) -> Optional[str]:
         """生成AI回复"""
         if not self.is_ai_enabled(cookie_id):
             return None
@@ -493,7 +536,7 @@ class AIReplyEngine:
                     if not client:
                         return None
                     logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7)
+                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7, image_urls=image_urls)
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
@@ -516,14 +559,14 @@ class AIReplyEngine:
 
     async def generate_reply_async(self, message: str, item_info: dict, chat_id: str,
                                    cookie_id: str, user_id: str, item_id: str,
-                                   skip_wait: bool = False) -> Optional[str]:
+                                   skip_wait: bool = False, image_urls: list = None) -> Optional[str]:
         """
         异步包装器：在独立线程池中执行同步的 `generate_reply`，并返回结果。
         这样可以在异步代码中直接 await，而不阻塞事件循环。
         """
         try:
             import asyncio as _asyncio
-            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait)
+            return await _asyncio.to_thread(self.generate_reply, message, item_info, chat_id, cookie_id, user_id, item_id, skip_wait, image_urls)
         except Exception as e:
             logger.error(f"异步生成回复失败: {e}")
             return None
