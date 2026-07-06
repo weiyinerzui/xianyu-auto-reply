@@ -7432,7 +7432,8 @@ class XianyuLive:
                     'send_user_id': send_user_id,
                     'send_message': send_message,
                     'item_id': item_id,
-                    'msg_time': msg_time
+                    'msg_time': msg_time,
+                    'image_urls': image_urls
                 },
                 'timer': current_timer
             }
@@ -7471,7 +7472,8 @@ class XianyuLive:
                         last_msg['send_message'],
                         last_msg['item_id'],
                         chat_id,
-                        last_msg['msg_time']
+                        last_msg['msg_time'],
+                        last_msg.get('image_urls')
                     )
                     
                 except asyncio.CancelledError:
@@ -7489,7 +7491,7 @@ class XianyuLive:
 
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
-                                         chat_id: str, msg_time: str):
+                                         chat_id: str, msg_time: str, image_urls: list = None):
         """
         处理聊天消息的回复逻辑（从handle_message中提取出来的核心回复逻辑）
         
