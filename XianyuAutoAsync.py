@@ -3490,7 +3490,7 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】更新默认回复图片URL失败: {e}")
 
-    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str):
+    async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str, image_urls: list = None):
         """获取AI回复"""
         try:
             from ai_reply_engine import ai_reply_engine
@@ -3537,7 +3537,8 @@ class XianyuLive:
                 cookie_id=self.cookie_id,
                 user_id=send_user_id,
                 item_id=item_id,
-                skip_wait=True  # 跳过内部等待，因为外部已实现防抖
+                skip_wait=True,  # 跳过内部等待，因为外部已实现防抖
+                image_urls=image_urls  # 透传图片URL
             )
 
             if reply:
@@ -7339,7 +7340,7 @@ class XianyuLive:
 
     async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket, 
                                        send_user_name: str, send_user_id: str, send_message: str,
-                                       item_id: str, msg_time: str):
+                                       item_id: str, msg_time: str, image_urls: list = None):
         """
         调度防抖回复：如果用户连续发送消息，等待用户停止发送后再回复最后一条消息
         
@@ -7544,7 +7545,7 @@ class XianyuLive:
                     reply_source = '关键词'  # 标记为关键词回复
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
-                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
+                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id, image_urls=image_urls)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
                     else:
@@ -7940,6 +7941,25 @@ class XianyuLive:
                 send_user_id = message_10.get("senderUserId", "unknown")
                 send_message = message_10.get("reminderContent", "")
 
+                # 从 message_1["6"]["3"]["5"] 提取图片URL（JSON 字符串字段）
+                # 闲鱼图片消息结构: message_1["6"]["3"]["5"] 是 JSON 字符串，解析后含 contentType=2 和 image.pics[].url
+                image_urls = []
+                try:
+                    content_json_str = message_1.get("6", {}).get("3", {}).get("5", "")
+                    if content_json_str and isinstance(content_json_str, str):
+                        content_data = json.loads(content_json_str)
+                        # contentType=2 表示图片消息
+                        if content_data.get("contentType") == 2:
+                            pics = content_data.get("image", {}).get("pics", [])
+                            for pic in pics:
+                                url = pic.get("url")
+                                if url and isinstance(url, str) and url.startswith("http"):
+                                    image_urls.append(url)
+                        if image_urls:
+                            logger.info(f"【{self.cookie_id}】提取到图片URL: {image_urls}")
+                except Exception as img_err:
+                    logger.debug(f"提取图片URL失败: {self._safe_str(img_err)}")
+
                 chat_id_raw = message_1.get("2", "")
                 chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
 
@@ -8152,7 +8172,8 @@ class XianyuLive:
                 send_user_id=send_user_id,
                 send_message=send_message,
                 item_id=item_id,
-                msg_time=msg_time
+                msg_time=msg_time,
+                image_urls=image_urls
             )
 
         except Exception as e:
