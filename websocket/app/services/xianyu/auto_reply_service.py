@@ -574,6 +574,7 @@ class AutoReplyService:
             chat_id = parsed_message.get("chat_id", "")
             item_id = parsed_message.get("item_id", "")
             msg_time = parsed_message.get("msg_time", "")
+            image_urls = parsed_message.get("image_urls", [])
             
             # 1. 检查是否是自己发出的消息（手动发出）
             # 使用myid判断（参照旧框架）
@@ -683,6 +684,7 @@ class AutoReplyService:
                     chat_id=chat_id,
                     item_id=item_id,
                     msg_time=msg_time,
+                    image_urls=image_urls,
                 )
                 
                 if reply:
@@ -1055,6 +1057,7 @@ class AutoReplyService:
         chat_id: str,
         item_id: Optional[str] = None,
         msg_time: str = "",
+        image_urls: list = None,
     ) -> Optional[str]:
         """获取自动回复(主入口)
         
@@ -1095,7 +1098,7 @@ class AutoReplyService:
                     return keyword_reply
                 
                 ai_reply = await self.get_ai_reply(
-                    session, send_user_name, send_user_id, send_message, item_id, chat_id
+                    session, send_user_name, send_user_id, send_message, item_id, chat_id, image_urls=image_urls
                 )
                 if ai_reply:
                     return ai_reply
@@ -1765,6 +1768,7 @@ class AutoReplyService:
         send_message: str,
         item_id: Optional[str],
         chat_id: str,
+        image_urls: list = None,
     ) -> Optional[str]:
         """获取AI回复
         
@@ -1862,6 +1866,7 @@ class AutoReplyService:
                 item_id=item_id or "",
                 db_session=session,
                 skip_wait=True,
+                image_urls=image_urls,
             )
             
             if reply:

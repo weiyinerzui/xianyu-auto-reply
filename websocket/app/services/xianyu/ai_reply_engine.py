@@ -452,20 +452,47 @@ class AIReplyEngine:
         messages: List[Dict],
         max_tokens: int = 8192,
         temperature: float = 0.5,
+        image_urls: list = None,
     ) -> str:
-        """调用OpenAI兼容API"""
+        """调用OpenAI兼容API（支持多模态图片）"""
+        import os
         try:
             from openai import AsyncOpenAI
             
-            client = AsyncOpenAI(
+            # 默认用原配置（无图片，或降级场景）
+            active_client = AsyncOpenAI(
                 api_key=settings["api_key"],
                 base_url=normalize_openai_base_url(settings["base_url"]),
             )
-            
+            active_settings = settings
             request_messages = self._build_openai_messages(messages)
+            
+            # ===== 有图片：切换到 qnaigc 视觉模型 =====
+            if image_urls:
+                qnaigc_api_key = os.getenv("QNAIGC_API_KEY", "")
+                qnaigc_base_url = os.getenv("QNAIGC_BASE_URL", "https://api.qnaigc.com/v1")
+                qnaigc_model = os.getenv("QNAIGC_VISION_MODEL", "google/gemini-3.5-flash")
+                
+                if not qnaigc_api_key:
+                    logger.warning("有图片但未配置 QNAIGC_API_KEY 环境变量，降级到文本模型（不传图片）")
+                else:
+                    # 构建多模态 messages：把最后一条 user 消息的 content 改为多模态格式
+                    for msg in request_messages:
+                        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                            content = [{"type": "text", "text": msg["content"]}]
+                            for url in image_urls:
+                                content.append({"type": "image_url", "image_url": {"url": url}})
+                            msg["content"] = content
+                            break
+                    
+                    # 切换到 qnaigc 视觉模型
+                    active_client = AsyncOpenAI(api_key=qnaigc_api_key, base_url=qnaigc_base_url)
+                    active_settings = {**settings, "model_name": qnaigc_model}
+                    logger.info(f"调用视觉模型: model={qnaigc_model}, base_url={qnaigc_base_url}, image_count={len(image_urls)}")
+            
             response = await self._create_openai_completion_with_fallbacks(
-                client=client,
-                settings=settings,
+                client=active_client,
+                settings=active_settings,
                 messages=request_messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -490,8 +517,8 @@ class AIReplyEngine:
                         f"OpenAI API输出被截断，使用 max_tokens={retry_max_tokens} 重试一次"
                     )
                     retry_response = await self._create_openai_completion_with_fallbacks(
-                        client=client,
-                        settings=settings,
+                        client=active_client,
+                        settings=active_settings,
                         messages=request_messages,
                         max_tokens=retry_max_tokens,
                         temperature=temperature,
@@ -706,6 +733,7 @@ class AIReplyEngine:
         item_id: str,
         db_session: AsyncSession,
         skip_wait: bool = False,
+        image_urls: list = None,
     ) -> Optional[str]:
         """生成AI回复
         
@@ -921,7 +949,7 @@ class AIReplyEngine:
                 elif provider_type == "anthropic":
                     reply = await self._call_anthropic_api(settings, messages)
                 else:
-                    reply = await self._call_openai_api(settings, messages)
+                    reply = await self._call_openai_api(settings, messages, image_urls=image_urls)
                 
                 if reply:
                     # 保存AI回复（带重试机制，防止连接丢失）

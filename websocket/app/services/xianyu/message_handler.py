@@ -293,6 +293,25 @@ class MessageHandler:
                 # 卡片消息通常是系统消息，用户名设为"系统"
                 send_user_name = "系统"
             
+            # 提取图片URL（从 message_1["6"]["3"]["5"] JSON 字符串字段）
+            # 闲鱼图片消息结构: message_1["6"]["3"]["5"] 是 JSON 字符串，解析后含 contentType=2 和 image.pics[].url
+            image_urls = []
+            try:
+                content_json_str = message_1.get("6", {}).get("3", {}).get("5", "")
+                if content_json_str and isinstance(content_json_str, str):
+                    content_data = json.loads(content_json_str)
+                    # contentType=2 表示图片消息
+                    if content_data.get("contentType") == 2:
+                        pics = content_data.get("image", {}).get("pics", [])
+                        for pic in pics:
+                            url = pic.get("url")
+                            if url and isinstance(url, str) and url.startswith("http"):
+                                image_urls.append(url)
+                    if image_urls:
+                        logger.info(f"【{self.cookie_id}】提取到图片URL: {image_urls}")
+            except Exception as img_err:
+                logger.debug(f"【{self.cookie_id}】提取图片URL失败: {img_err}")
+            
             # 提取商品ID
             item_id = self._extract_item_id(message)
             
@@ -304,6 +323,7 @@ class MessageHandler:
                 "item_id": item_id,
                 "msg_time": msg_time,
                 "raw_message": message,
+                "image_urls": image_urls,
             }
             
         except Exception as e:
