@@ -12,6 +12,7 @@ AI回复引擎模块
 import os
 import json
 import time
+import asyncio
 import sqlite3
 import requests  # 确保已导入
 import threading
@@ -489,6 +490,54 @@ class AIReplyEngine:
                     item_desc += f"\n【知识库】\n{knowledge_base}"
                     logger.debug(f"已注入知识库，长度: {len(knowledge_base)} 字符")
 
+                # 🔧 记忆系统 — 商品级隔离 + 客户类型判断 + 策略注入
+                memory_context = ""
+                customer_type = None
+                try:
+                    # 1. 获取商品级画像（优先），降级到跨商品通用画像
+                    customer_profile = db_manager.get_customer_profile(cookie_id, user_id, item_id)
+                    if not customer_profile:
+                        customer_profile = db_manager.get_customer_profile_any_item(cookie_id, user_id)
+
+                    if customer_profile:
+                        customer_type = customer_profile.get('customer_type')
+                        if customer_profile.get('profile_summary'):
+                            memory_context += f"\n【客户画像】\n{customer_profile['profile_summary']}"
+                            logger.debug(f"已注入客户画像: {customer_profile['profile_summary'][:50]}...")
+
+                        if customer_type and customer_profile.get('type_confidence', 0) > 0.3:
+                            memory_context += f"\n【客户类型】{customer_type}（置信度: {customer_profile['type_confidence']:.0%}）"
+
+                    # 2. 注入策略模板（按客户类型）
+                    if customer_type:
+                        strategy = db_manager.get_strategy_template(cookie_id, customer_type)
+                        if strategy:
+                            memory_context += f"\n【沟通策略】{strategy['strategy_text']}"
+                            # 如果画像里已有个性化策略，覆盖默认模板
+                            if customer_profile and customer_profile.get('communication_strategy'):
+                                memory_context += f"\n【个性化策略】{customer_profile['communication_strategy']}"
+
+                    # 3. 注入经验（优先同类型 + 同商品经验）
+                    lessons = db_manager.get_active_lessons(cookie_id, item_id, limit=3, customer_type=customer_type)
+                    if lessons:
+                        lessons_text = "\n".join([f"- {l['lesson_text']}" for l in lessons])
+                        memory_context += f"\n【回复经验】\n{lessons_text}"
+                        logger.debug(f"已注入{len(lessons)}条经验（客户类型: {customer_type}）")
+
+                    # 4. 实时客户类型判断指引（注入到 system_prompt 层面更合适，但这里追加到 memory_context）
+                    low_confidence = not customer_type or (customer_profile and customer_profile.get('type_confidence', 0) < 0.5)
+                    if low_confidence:
+                        memory_context += "\n【实时判断指引】请在对话中判断该客户属于以下哪种类型，并采取对应策略：\n" \
+                                          "- price_sensitive（价格敏感型）：强调性价比，给小优惠促成交\n" \
+                                          "- hesitant（犹豫型）：主动引导，提供保障，制造紧迫感\n" \
+                                          "- decisive（果断型）：简洁直接，快速回答关键问题\n" \
+                                          "- friendly（友好型）：亲切互动，推荐搭配\n" \
+                                          "- difficult（难缠型）：耐心专业，用事实回应\n" \
+                                          "- bargain_heavy（重度砍价型）：坚守底线，价值论证\n" \
+                                          "- inquiry_only（仅咨询型）：提供信息激发购买欲望"
+                except Exception as mem_err:
+                    logger.debug(f"记忆系统注入失败（不影响回复）: {mem_err}")
+
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
 
@@ -499,7 +548,7 @@ class AIReplyEngine:
 
                 user_prompt = f"""商品信息：
 {item_desc}
-
+{memory_context}
 对话历史：
 {context_str}
 
@@ -679,3 +728,236 @@ class AIReplyEngine:
 
 # 全局AI回复引擎实例
 ai_reply_engine = AIReplyEngine()
+
+
+class MemoryEvolutionService:
+    """记忆进化服务：异步分析对话，更新客户画像/经验/知识建议
+    
+    在 FastAPI startup 时启动后台循环，每10分钟扫描新对话并调AI总结。
+    不影响实时对话速度（完全异步）。
+    """
+    
+    def __init__(self, interval_seconds: int = 600):
+        self.interval = interval_seconds
+        self._task = None
+        self._running = False
+        self._last_run_timestamp = "1970-01-01 00:00:00"
+    
+    async def start(self):
+        """启动后台循环"""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._loop())
+        logger.info("记忆进化服务已启动")
+    
+    async def stop(self):
+        """停止后台循环"""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info("记忆进化服务已停止")
+    
+    async def _loop(self):
+        """主循环"""
+        while self._running:
+            try:
+                await asyncio.sleep(self.interval)
+                await self._evolve_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"记忆进化循环异常: {e}")
+                await asyncio.sleep(60)
+    
+    async def _evolve_once(self):
+        """执行一轮进化"""
+        try:
+            conversations = db_manager.get_recent_conversations(self._last_run_timestamp, limit=100)
+            if not conversations:
+                logger.debug("记忆进化：无新对话，跳过")
+                return
+            
+            # 按 chat_id + cookie_id 分组
+            groups = {}
+            for conv in conversations:
+                key = (conv['cookie_id'], conv['chat_id'])
+                if key not in groups:
+                    groups[key] = {
+                        'cookie_id': conv['cookie_id'],
+                        'chat_id': conv['chat_id'],
+                        'user_id': conv['user_id'],
+                        'item_id': conv['item_id'],
+                        'messages': [],
+                        'conversation_ids': []
+                    }
+                groups[key]['messages'].append({
+                    'role': conv['role'],
+                    'content': conv['content']
+                })
+                groups[key]['conversation_ids'].append(conv['id'])
+            
+            logger.info(f"记忆进化：处理 {len(groups)} 段新对话")
+            
+            for key, group in groups.items():
+                try:
+                    # 只处理有实际内容的对话（至少2条消息）
+                    if len(group['messages']) < 2:
+                        continue
+                    await self._analyze_and_store(group)
+                except Exception as e:
+                    logger.error(f"分析对话失败 {key}: {e}")
+            
+            # 更新最后运行时间
+            if conversations:
+                self._last_run_timestamp = conversations[-1]['created_at']
+                logger.info(f"记忆进化完成，处理至 {self._last_run_timestamp}")
+        except Exception as e:
+            logger.error(f"记忆进化执行失败: {e}")
+    
+    async def _analyze_and_store(self, group: dict):
+        """分析一段对话并存储结果（商品级隔离 + 客户类型 + 策略进化）"""
+        cookie_id = group['cookie_id']
+        user_id = group['user_id']
+        item_id = group['item_id']
+        conv_ids = json.dumps(group['conversation_ids'])
+        
+        # 构建对话文本
+        conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in group['messages']])
+        
+        # 调AI总结
+        summary = await self._summarize_conversation(conv_text, cookie_id)
+        if not summary:
+            return
+        
+        # 提取客户类型（核心判断）
+        customer_type = summary.get('customer_type')
+        type_confidence = summary.get('type_confidence', 0.5)
+        personalized_strategy = summary.get('personalized_strategy')
+        
+        # 更新客户画像（商品级隔离）
+        if summary.get('customer_profile') or customer_type:
+            try:
+                existing = db_manager.get_customer_profile(cookie_id, user_id, item_id)
+                count = (existing['conversation_count'] + 1) if existing else 1
+                prefs = json.dumps(summary.get('preferences', []), ensure_ascii=False)
+                db_manager.upsert_customer_profile(
+                    cookie_id, user_id,
+                    summary.get('customer_profile', ''),
+                    prefs, count,
+                    item_id=item_id,
+                    customer_type=customer_type,
+                    type_confidence=type_confidence,
+                    communication_strategy=personalized_strategy
+                )
+                logger.info(f"客户画像已更新: {user_id} 类型={customer_type} 置信度={type_confidence} 商品={item_id}")
+            except Exception as e:
+                logger.error(f"更新客户画像失败: {e}")
+        
+        # 存储经验（带客户类型标签）
+        for lesson in summary.get('lessons', []):
+            try:
+                db_manager.add_lesson(
+                    cookie_id, item_id,
+                    lesson.get('text', ''),
+                    lesson.get('category', 'general'),
+                    conv_ids,
+                    customer_type=customer_type
+                )
+            except Exception as e:
+                logger.error(f"添加经验失败: {e}")
+        
+        # 存储知识库建议
+        for suggestion in summary.get('knowledge_suggestions', []):
+            try:
+                db_manager.add_suggestion(
+                    cookie_id, item_id,
+                    suggestion.get('question', ''),
+                    suggestion.get('answer', ''),
+                    conv_ids
+                )
+            except Exception as e:
+                logger.error(f"添加知识库建议失败: {e}")
+        
+        # 策略进化：如果AI建议了新策略模板，且客户类型明确，则添加到策略库
+        new_strategy = summary.get('new_strategy_template')
+        if new_strategy and customer_type and type_confidence > 0.6:
+            try:
+                db_manager.add_strategy_template(cookie_id, customer_type, new_strategy)
+                logger.info(f"新策略模板已添加: 类型={customer_type} 策略={new_strategy[:30]}...")
+            except Exception as e:
+                logger.error(f"添加策略模板失败: {e}")
+    
+    async def _summarize_conversation(self, conv_text: str, cookie_id: str) -> Optional[dict]:
+        """调AI总结一段对话，返回结构化结果（含客户类型判断和策略进化）"""
+        try:
+            settings = db_manager.get_ai_reply_settings(cookie_id)
+            if not settings['ai_enabled'] or not settings.get('api_key'):
+                return None
+            
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(
+                api_key=settings['api_key'],
+                base_url=settings.get('base_url', '')
+            )
+            
+            system_prompt = """你是客服对话分析助手。分析以下客服对话，提取关键信息。
+请输出JSON格式（不要输出其他内容）：
+{
+  "customer_type": "客户类型，必须是以下之一：price_sensitive|hesitant|decisive|friendly|difficult|bargain_heavy|inquiry_only",
+  "type_confidence": 0.0到1.0的浮点数，表示判断置信度,
+  "customer_profile": "该客户的偏好和特征摘要（1-2句话）",
+  "preferences": ["标签1", "标签2"],
+  "personalized_strategy": "针对该客户的个性化沟通策略建议（1句话，基于其类型和对话表现）",
+  "lessons": [
+    {"text": "有效回复策略或经验教训（1句话）", "category": "reply_strategy|common_question|price|objection"}
+  ],
+  "knowledge_suggestions": [
+    {"question": "买家常问的问题", "answer": "建议的标准回答"}
+  ],
+  "new_strategy_template": "如果你发现当前策略不够好，可以提出一个针对该客户类型的新策略模板（1句话）。如果当前策略够好则留空。"
+}
+客户类型判断依据：
+- price_sensitive: 反复问价格、比价、要求优惠
+- hesitant: 犹豫不决、问很多细节、迟迟不下单
+- decisive: 直接问关键信息、快速决策、少废话
+- friendly: 友善闲聊、配合度高、易沟通
+- difficult: 态度差、要求多、难沟通
+- bargain_heavy: 疯狂砍价、不合理压价、纠缠价格
+- inquiry_only: 只问不买、收集信息、无购买意图
+注意：lessons最多3条，knowledge_suggestions最多2条。如果没有有价值的信息，返回空数组。"""
+            
+            response = await client.chat.completions.create(
+                model=settings['model_name'],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"【对话记录】\n{conv_text[:2000]}"}
+                ],
+                max_tokens=500,
+                temperature=0.3,
+                timeout=30
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            # 尝试解析JSON
+            if result_text.startswith('```'):
+                result_text = result_text.split('```')[1]
+                if result_text.startswith('json'):
+                    result_text = result_text[4:]
+            result_text = result_text.strip()
+            
+            return json.loads(result_text)
+        except json.JSONDecodeError:
+            logger.debug(f"AI总结结果JSON解析失败，跳过")
+            return None
+        except Exception as e:
+            logger.error(f"AI总结对话失败: {e}")
+            return None
+
+
+# 全局记忆进化服务实例
+memory_evolution_service = MemoryEvolutionService()
