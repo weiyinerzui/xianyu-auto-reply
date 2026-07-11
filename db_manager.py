@@ -5223,6 +5223,92 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
+    def get_customer_type_for_order(self, cookie_id: str, buyer_id: str, item_id: str = None) -> Optional[str]:
+        """根据订单的 buyer_id 反查客户类型（用于策略效果反馈）
+
+        优先商品级画像，再跨商品通用画像
+        """
+        try:
+            # 1. 商品级画像
+            profile = self.get_customer_profile(cookie_id, buyer_id, item_id)
+            if not profile:
+                # 2. 跨商品通用画像
+                profile = self.get_customer_profile_any_item(cookie_id, buyer_id)
+            if profile and profile.get('customer_type'):
+                return profile['customer_type']
+            return None
+        except Exception as e:
+            logger.debug(f"反查客户类型失败: {e}")
+            return None
+
+    def update_lesson_effectiveness(self, cookie_id: str, item_id: str = None,
+                                    customer_type: str = None, success: bool = True,
+                                    limit: int = 3) -> bool:
+        """更新经验效果评分（与策略进化同步）
+
+        成功的经验 +0.05（上限1.0），失败的经验 -0.03（下限0.0）。
+        效果持续低于 0.1 的经验自动停用。
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                # 选取最相关的 N 条活跃经验
+                conditions = ["cookie_id = ?", "is_active = TRUE"]
+                params = [cookie_id]
+                order_params = []
+                if item_id:
+                    conditions.append("(item_id = ? OR item_id IS NULL)")
+                    params.append(item_id)
+                    order_params.append(item_id)
+                else:
+                    order_params.append('')
+                if customer_type:
+                    conditions.append("(customer_type = ? OR customer_type IS NULL)")
+                    params.append(customer_type)
+                    order_params.append(customer_type)
+                else:
+                    order_params.append('')
+
+                cursor.execute(f'''
+                SELECT id FROM agent_lessons
+                WHERE {" AND ".join(conditions)}
+                ORDER BY
+                    CASE WHEN item_id = ? THEN 0 ELSE 1 END,
+                    CASE WHEN customer_type = ? THEN 0 ELSE 1 END,
+                    effectiveness_score DESC
+                LIMIT ?
+                ''', params + order_params + [limit])
+
+                lesson_ids = [row[0] for row in cursor.fetchall()]
+                if not lesson_ids:
+                    return True
+
+                delta = 0.05 if success else -0.03
+                for lid in lesson_ids:
+                    if success:
+                        cursor.execute('''
+                        UPDATE agent_lessons SET effectiveness_score = MIN(1.0, effectiveness_score + ?)
+                        WHERE id = ?
+                        ''', (delta, lid))
+                    else:
+                        cursor.execute('''
+                        UPDATE agent_lessons SET effectiveness_score = MAX(0.0, effectiveness_score + ?)
+                        WHERE id = ?
+                        ''', (delta, lid))
+
+                # 停用效果极差的经验
+                cursor.execute('''
+                UPDATE agent_lessons SET is_active = FALSE
+                WHERE cookie_id = ? AND effectiveness_score < 0.1
+                ''', (cookie_id,))
+
+                self.conn.commit()
+                logger.debug(f"经验效果已更新: cookie={cookie_id} type={customer_type} success={success} 更新{len(lesson_ids)}条")
+                return True
+            except Exception as e:
+                logger.error(f"更新经验效果失败: {e}")
+                return False
+
     def get_orders_by_cookie(self, cookie_id: str, limit: int = 100):
         """根据Cookie ID获取订单列表"""
         with self.lock:
