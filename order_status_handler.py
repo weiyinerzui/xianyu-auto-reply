@@ -295,6 +295,9 @@ class OrderStatusHandler:
                     status_text = self.status_mapping.get(new_status, new_status)
                     if self.config.get('enable_status_logging', True):
                         logger.info(f"✅ 订单状态更新成功: {order_id} -> {status_text} ({context})")
+                    
+                    # 🔧 策略进化闭环：根据订单状态变更反馈策略效果
+                    self._feedback_strategy_status(order_id, cookie_id, new_status)
                 else:
                     logger.error(f"❌ 订单状态更新失败: {order_id} -> {new_status} ({context})")
                 
@@ -305,7 +308,61 @@ class OrderStatusHandler:
                 import traceback
                 logger.error(f"详细错误信息: {traceback.format_exc()}")
                 return False
-    
+
+    def _feedback_strategy_status(self, order_id: str, cookie_id: str, new_status: str):
+        """策略进化闭环：根据订单最终状态反馈策略和经验效果
+
+        成功信号（策略有效）:
+          - pending_ship: 买家已付款（从咨询→成交）
+          - completed: 交易完成
+        失败信号（策略无效或负面）:
+          - cancelled: 交易关闭/退款完成
+        """
+        SUCCESS_STATUSES = {'pending_ship', 'completed'}
+        FAIL_STATUSES = {'cancelled'}
+        INTERMEDIATE_STATUSES = {'processing', 'shipped', 'refunding', 'refund_cancelled'}
+
+        # 只对终态或关键节点反馈，中间态跳过
+        if new_status in INTERMEDIATE_STATUSES:
+            return
+        if new_status not in SUCCESS_STATUSES and new_status not in FAIL_STATUSES:
+            return
+
+        try:
+            from db_manager import db_manager
+
+            # 获取订单信息，拿到 buyer_id 和 item_id
+            order = db_manager.get_order_by_id(order_id)
+            if not order:
+                return
+
+            buyer_id = order.get('buyer_id')
+            item_id = order.get('item_id')
+            if not buyer_id:
+                return
+
+            # 反查客户类型
+            customer_type = db_manager.get_customer_type_for_order(cookie_id, buyer_id, item_id)
+            if not customer_type:
+                logger.debug(f"策略反馈跳过: 订单 {order_id} 无客户类型画像")
+                return
+
+            success = new_status in SUCCESS_STATUSES
+
+            # 1. 更新策略模板效果评分
+            db_manager.update_strategy_stats(cookie_id, customer_type, success)
+
+            # 2. 同步更新经验效果评分
+            db_manager.update_lesson_effectiveness(
+                cookie_id, item_id=item_id,
+                customer_type=customer_type, success=success
+            )
+
+            action = "成交✅策略+经验加分" if success else "流失❌策略+经验减分"
+            logger.info(f"🔧 策略进化反馈: 订单={order_id} 类型={customer_type} {action}")
+        except Exception as e:
+            logger.debug(f"策略进化反馈失败（不影响订单流程）: {e}")
+
     def _is_valid_status_transition(self, current_status: str, new_status: str) -> bool:
         """检查状态转换是否合理
         
