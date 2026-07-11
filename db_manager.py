@@ -205,6 +205,101 @@ class DBManager:
             )
             ''')
 
+            # 创建客户画像表（记忆系统 — 商品级隔离 + 客户类型 + 沟通策略）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS customer_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                customer_id TEXT NOT NULL,
+                item_id TEXT,
+                customer_type TEXT,
+                type_confidence REAL DEFAULT 0.0,
+                profile_summary TEXT,
+                preferences TEXT,
+                communication_strategy TEXT,
+                conversation_count INTEGER DEFAULT 0,
+                last_interaction TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(cookie_id, customer_id, item_id),
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
+            # 创建策略模板表（按客户类型存储进化中的策略模板）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS strategy_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                customer_type TEXT NOT NULL,
+                strategy_text TEXT NOT NULL,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                effectiveness_score REAL DEFAULT 0.5,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
+            # 插入默认策略模板（首次启动时填充）
+            default_strategies = [
+                ('price_sensitive', '强调性价比和限时优惠，先报略高价格留议价空间，让买家感到占了便宜'),
+                ('hesitant', '主动引导，提供明确推荐和保障，减少选择焦虑，限时制造紧迫感'),
+                ('decisive', '简洁直接，快速回答关键问题，不啰嗦，促进快速成交'),
+                ('friendly', '亲切互动，适当闲聊拉近距离，推荐搭配或追加销售'),
+                ('difficult', '保持耐心和专业，用事实和数据回应，避免情绪化，逐步建立信任'),
+                ('bargain_heavy', '坚守价格底线，用价值论证代替直接拒绝，提供替代方案（如赠品/小优惠）'),
+                ('inquiry_only', '提供完整信息激发购买欲望，主动询问顾虑，引导从咨询转向购买')
+            ]
+            for type_code, strategy_text in default_strategies:
+                cursor.execute('''
+                INSERT OR IGNORE INTO strategy_templates (cookie_id, customer_type, strategy_text)
+                SELECT '__default__', ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM strategy_templates WHERE cookie_id = '__default__' AND customer_type = ?
+                )
+                ''', (type_code, strategy_text, type_code))
+
+            # 创建经验库表（自我进化系统 — 带客户类型标签）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS agent_lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                item_id TEXT,
+                lesson_text TEXT NOT NULL,
+                category TEXT,
+                customer_type TEXT,
+                source_conversation_ids TEXT,
+                effectiveness_score REAL DEFAULT 0.5,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
+            # 创建知识库建议表（需人工审核）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS knowledge_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                item_id TEXT,
+                question TEXT NOT NULL,
+                suggested_answer TEXT NOT NULL,
+                source_conversation_ids TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP,
+                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+            )
+            ''')
+
+            # 创建索引：加速记忆系统查询
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_customer_profiles_lookup ON customer_profiles(cookie_id, customer_id, item_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_agent_lessons_lookup ON agent_lessons(cookie_id, item_id, is_active)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_strategy_templates_lookup ON strategy_templates(cookie_id, customer_type, is_active)')
+
             # 创建卡券表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS cards (
@@ -2625,6 +2720,356 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有系统设置失败: {e}")
                 return {}
+
+    # ==================== 记忆进化系统方法 ====================
+
+    def get_customer_profile(self, cookie_id: str, customer_id: str, item_id: str = None) -> Optional[Dict]:
+        """获取客户画像（商品级隔离：item_id 维度区分不同商品的画像）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT customer_type, type_confidence, profile_summary, preferences,
+                       communication_strategy, conversation_count, last_interaction
+                FROM customer_profiles
+                WHERE cookie_id = ? AND customer_id = ? AND (item_id = ? OR (item_id IS NULL AND ? IS NULL))
+                ''', (cookie_id, customer_id, item_id, item_id))
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'customer_type': row[0],
+                        'type_confidence': row[1],
+                        'profile_summary': row[2],
+                        'preferences': row[3],
+                        'communication_strategy': row[4],
+                        'conversation_count': row[5],
+                        'last_interaction': row[6]
+                    }
+                return None
+            except Exception as e:
+                logger.error(f"获取客户画像失败: {e}")
+                return None
+
+    def get_customer_profile_any_item(self, cookie_id: str, customer_id: str) -> Optional[Dict]:
+        """获取客户跨商品通用画像（fallback：无商品级画像时使用）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT customer_type, type_confidence, profile_summary, preferences,
+                       communication_strategy, conversation_count, last_interaction
+                FROM customer_profiles
+                WHERE cookie_id = ? AND customer_id = ?
+                ORDER BY updated_at DESC LIMIT 1
+                ''', (cookie_id, customer_id))
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'customer_type': row[0],
+                        'type_confidence': row[1],
+                        'profile_summary': row[2],
+                        'preferences': row[3],
+                        'communication_strategy': row[4],
+                        'conversation_count': row[5],
+                        'last_interaction': row[6]
+                    }
+                return None
+            except Exception as e:
+                logger.error(f"获取客户通用画像失败: {e}")
+                return None
+
+    def upsert_customer_profile(self, cookie_id: str, customer_id: str,
+                                profile_summary: str, preferences: str,
+                                conversation_count: int,
+                                item_id: str = None,
+                                customer_type: str = None,
+                                type_confidence: float = 0.0,
+                                communication_strategy: str = None) -> bool:
+        """更新或插入客户画像（商品级隔离）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                # 查找已有记录
+                cursor.execute('''
+                SELECT id, conversation_count FROM customer_profiles
+                WHERE cookie_id = ? AND customer_id = ? AND (item_id = ? OR (item_id IS NULL AND ? IS NULL))
+                ''', (cookie_id, customer_id, item_id, item_id))
+                existing = cursor.fetchone()
+                if existing:
+                    # 更新：保留非空字段（避免覆盖已进化的策略和类型）
+                    update_fields = []
+                    params = []
+                    if profile_summary:
+                        update_fields.append("profile_summary = ?")
+                        params.append(profile_summary)
+                    if preferences is not None:
+                        update_fields.append("preferences = ?")
+                        params.append(preferences)
+                    if customer_type:
+                        update_fields.append("customer_type = ?")
+                        params.append(customer_type)
+                    if type_confidence > 0:
+                        update_fields.append("type_confidence = ?")
+                        params.append(type_confidence)
+                    if communication_strategy:
+                        update_fields.append("communication_strategy = ?")
+                        params.append(communication_strategy)
+                    update_fields.extend(["conversation_count = ?", "last_interaction = CURRENT_TIMESTAMP", "updated_at = CURRENT_TIMESTAMP"])
+                    params.extend([conversation_count])
+                    params.extend([existing[0]])
+                    cursor.execute(f'''
+                    UPDATE customer_profiles SET {', '.join(update_fields)}
+                    WHERE id = ?
+                    ''', params)
+                else:
+                    cursor.execute('''
+                    INSERT INTO customer_profiles (cookie_id, customer_id, item_id,
+                                                   customer_type, type_confidence, profile_summary,
+                                                   preferences, communication_strategy, conversation_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (cookie_id, customer_id, item_id, customer_type, type_confidence,
+                          profile_summary, preferences, communication_strategy, conversation_count))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"更新客户画像失败: {e}")
+                return False
+
+    def get_strategy_template(self, cookie_id: str, customer_type: str) -> Optional[Dict]:
+        """获取策略模板（优先该账号专属策略，降级到默认策略）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                # 1. 优先该账号专属策略
+                cursor.execute('''
+                SELECT strategy_text, effectiveness_score FROM strategy_templates
+                WHERE cookie_id = ? AND customer_type = ? AND is_active = TRUE
+                ORDER BY effectiveness_score DESC LIMIT 1
+                ''', (cookie_id, customer_type))
+                row = cursor.fetchone()
+                if row:
+                    return {'strategy_text': row[0], 'effectiveness_score': row[1], 'source': 'account'}
+                # 2. 降级到默认策略
+                cursor.execute('''
+                SELECT strategy_text, effectiveness_score FROM strategy_templates
+                WHERE cookie_id = '__default__' AND customer_type = ? AND is_active = TRUE
+                ORDER BY effectiveness_score DESC LIMIT 1
+                ''', (customer_type,))
+                row = cursor.fetchone()
+                if row:
+                    return {'strategy_text': row[0], 'effectiveness_score': row[1], 'source': 'default'}
+                return None
+            except Exception as e:
+                logger.error(f"获取策略模板失败: {e}")
+                return None
+
+    def update_strategy_stats(self, cookie_id: str, customer_type: str, success: bool) -> bool:
+        """更新策略统计（成交=success，未成交=fail），自动调整 effectiveness_score"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if success:
+                    cursor.execute('''
+                    UPDATE strategy_templates
+                    SET success_count = success_count + 1,
+                        effectiveness_score = MIN(1.0, effectiveness_score + 0.05),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE cookie_id = ? AND customer_type = ? AND is_active = TRUE
+                    ''', (cookie_id, customer_type))
+                else:
+                    cursor.execute('''
+                    UPDATE strategy_templates
+                    SET fail_count = fail_count + 1,
+                        effectiveness_score = MAX(0.0, effectiveness_score - 0.03),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE cookie_id = ? AND customer_type = ? AND is_active = TRUE
+                    ''', (cookie_id, customer_type))
+                # 如果策略效果持续差（score < 0.1），自动停用
+                cursor.execute('''
+                UPDATE strategy_templates SET is_active = FALSE
+                WHERE cookie_id = ? AND effectiveness_score < 0.1 AND success_count < fail_count
+                ''', (cookie_id,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"更新策略统计失败: {e}")
+                return False
+
+    def add_strategy_template(self, cookie_id: str, customer_type: str, strategy_text: str) -> bool:
+        """新增策略模板（AI进化生成的新策略）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT INTO strategy_templates (cookie_id, customer_type, strategy_text)
+                VALUES (?, ?, ?)
+                ''', (cookie_id, customer_type, strategy_text))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"添加策略模板失败: {e}")
+                return False
+
+    def get_active_lessons(self, cookie_id: str, item_id: str = None, limit: int = 5,
+                          customer_type: str = None) -> List[Dict]:
+        """获取活跃经验（优先：商品+类型双匹配 > 商品匹配 > 类型匹配 > 通用）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                lessons = []
+                seen_ids = set()
+
+                # 1. 商品 + 客户类型 双匹配（最高优先）
+                if item_id and customer_type:
+                    cursor.execute('''
+                    SELECT id, lesson_text, category, effectiveness_score
+                    FROM agent_lessons
+                    WHERE cookie_id = ? AND item_id = ? AND customer_type = ? AND is_active = TRUE
+                    ORDER BY effectiveness_score DESC, created_at DESC LIMIT ?
+                    ''', (cookie_id, item_id, customer_type, limit))
+                    for row in cursor.fetchall():
+                        if row[0] not in seen_ids:
+                            seen_ids.add(row[0])
+                            lessons.append({'lesson_text': row[1], 'category': row[2], 'effectiveness_score': row[3]})
+
+                # 2. 商品匹配
+                remaining = limit - len(lessons)
+                if item_id and remaining > 0:
+                    not_in_clause = f"AND id NOT IN ({','.join(['?']*len(seen_ids))})" if seen_ids else ""
+                    sql_params = [cookie_id, item_id] + list(seen_ids) + [remaining]
+                    cursor.execute(f'''
+                    SELECT id, lesson_text, category, effectiveness_score
+                    FROM agent_lessons
+                    WHERE cookie_id = ? AND item_id = ? AND is_active = TRUE
+                    {not_in_clause}
+                    ORDER BY effectiveness_score DESC, created_at DESC LIMIT ?
+                    ''', sql_params)
+                    for row in cursor.fetchall():
+                        if row[0] not in seen_ids:
+                            seen_ids.add(row[0])
+                            lessons.append({'lesson_text': row[1], 'category': row[2], 'effectiveness_score': row[3]})
+
+                # 3. 客户类型匹配
+                remaining = limit - len(lessons)
+                if customer_type and remaining > 0:
+                    not_in_clause = f"AND id NOT IN ({','.join(['?']*len(seen_ids))})" if seen_ids else ""
+                    sql_params = [cookie_id, customer_type] + list(seen_ids) + [remaining]
+                    cursor.execute(f'''
+                    SELECT id, lesson_text, category, effectiveness_score
+                    FROM agent_lessons
+                    WHERE cookie_id = ? AND customer_type = ? AND is_active = TRUE
+                    {not_in_clause}
+                    ORDER BY effectiveness_score DESC, created_at DESC LIMIT ?
+                    ''', sql_params)
+                    for row in cursor.fetchall():
+                        if row[0] not in seen_ids:
+                            seen_ids.add(row[0])
+                            lessons.append({'lesson_text': row[1], 'category': row[2], 'effectiveness_score': row[3]})
+
+                # 4. 通用经验
+                remaining = limit - len(lessons)
+                if remaining > 0:
+                    not_in_clause = f"AND id NOT IN ({','.join(['?']*len(seen_ids))})" if seen_ids else ""
+                    sql_params = [cookie_id] + list(seen_ids) + [remaining]
+                    cursor.execute(f'''
+                    SELECT id, lesson_text, category, effectiveness_score
+                    FROM agent_lessons
+                    WHERE cookie_id = ? AND item_id IS NULL AND is_active = TRUE
+                    {not_in_clause}
+                    ORDER BY effectiveness_score DESC, created_at DESC LIMIT ?
+                    ''', sql_params)
+                    for row in cursor.fetchall():
+                        if row[0] not in seen_ids:
+                            seen_ids.add(row[0])
+                            lessons.append({'lesson_text': row[1], 'category': row[2], 'effectiveness_score': row[3]})
+
+                return lessons
+            except Exception as e:
+                logger.error(f"获取经验库失败: {e}")
+                return []
+
+    def add_lesson(self, cookie_id: str, item_id: str, lesson_text: str,
+                   category: str, source_conversation_ids: str,
+                   customer_type: str = None) -> bool:
+        """添加经验"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT INTO agent_lessons (cookie_id, item_id, lesson_text, category, customer_type, source_conversation_ids)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (cookie_id, item_id, lesson_text, category, customer_type, source_conversation_ids))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"添加经验失败: {e}")
+                return False
+
+    def get_pending_suggestions(self, cookie_id: str, limit: int = 20) -> List[Dict]:
+        """获取待审核的知识库建议"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT id, item_id, question, suggested_answer, created_at
+                FROM knowledge_suggestions
+                WHERE cookie_id = ? AND status = 'pending'
+                ORDER BY created_at DESC LIMIT ?
+                ''', (cookie_id, limit))
+                return [{'id': r[0], 'item_id': r[1], 'question': r[2],
+                         'suggested_answer': r[3], 'created_at': r[4]} for r in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取知识库建议失败: {e}")
+                return []
+
+    def add_suggestion(self, cookie_id: str, item_id: str, question: str,
+                       suggested_answer: str, source_conversation_ids: str) -> bool:
+        """添加知识库建议"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT INTO knowledge_suggestions (cookie_id, item_id, question, suggested_answer, source_conversation_ids)
+                VALUES (?, ?, ?, ?, ?)
+                ''', (cookie_id, item_id, question, suggested_answer, source_conversation_ids))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"添加知识库建议失败: {e}")
+                return False
+
+    def update_suggestion_status(self, suggestion_id: int, status: str) -> bool:
+        """更新建议状态（approved/rejected）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                UPDATE knowledge_suggestions SET status = ?, reviewed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''', (status, suggestion_id))
+                self.conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新建议状态失败: {e}")
+                return False
+
+    def get_recent_conversations(self, since_timestamp: str, limit: int = 50) -> List[Dict]:
+        """获取指定时间之后的对话记录（按chat_id分组）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT id, cookie_id, chat_id, user_id, item_id, role, content, intent, created_at
+                FROM ai_conversations
+                WHERE created_at > ?
+                ORDER BY created_at ASC LIMIT ?
+                ''', (since_timestamp, limit))
+                return [{'id': r[0], 'cookie_id': r[1], 'chat_id': r[2], 'user_id': r[3],
+                         'item_id': r[4], 'role': r[5], 'content': r[6], 'intent': r[7],
+                         'created_at': r[8]} for r in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取最近对话失败: {e}")
+                return []
 
     # 管理员密码现在统一使用用户表管理，不再需要单独的方法
 
