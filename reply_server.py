@@ -362,6 +362,23 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# 启动记忆进化服务
+@app.on_event("startup")
+async def _start_memory_service():
+    try:
+        from ai_reply_engine import memory_evolution_service
+        await memory_evolution_service.start()
+    except Exception as e:
+        logger.warning(f"记忆进化服务启动失败（不影响主功能）: {e}")
+
+@app.on_event("shutdown")
+async def _stop_memory_service():
+    try:
+        from ai_reply_engine import memory_evolution_service
+        await memory_evolution_service.stop()
+    except Exception:
+        pass
+
 # 注册刮刮乐远程控制路由
 if CAPTCHA_ROUTER_AVAILABLE:
     app.include_router(captcha_router)
@@ -6359,6 +6376,137 @@ def delete_order(order_id: str, current_user: Dict[str, Any] = Depends(get_curre
     except Exception as e:
         log_with_user('error', f"删除订单失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=f"删除订单失败: {str(e)}")
+
+
+# ==================== 记忆进化系统：知识库建议审核 + 策略查看 ====================
+
+@app.get('/api/memory/knowledge-suggestions/{cookie_id}')
+async def get_knowledge_suggestions_api(cookie_id: str, _: None = Depends(require_auth)):
+    """获取待审核的知识库建议列表"""
+    from db_manager import db_manager
+    try:
+        suggestions = db_manager.get_pending_suggestions(cookie_id, limit=50)
+        return {"success": True, "data": suggestions}
+    except Exception as e:
+        logger.error(f"获取知识库建议失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/api/memory/knowledge-suggestions/{suggestion_id}/approve')
+async def approve_knowledge_suggestion(suggestion_id: int, _: None = Depends(require_auth)):
+    """审核通过知识库建议，并将其写入商品知识库"""
+    from db_manager import db_manager
+    try:
+        # 获取建议详情
+        with db_manager.lock:
+            cursor = db_manager.conn.cursor()
+            cursor.execute('''
+            SELECT cookie_id, item_id, question, suggested_answer
+            FROM knowledge_suggestions WHERE id = ? AND status = 'pending'
+            ''', (suggestion_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="建议不存在或已处理")
+
+            cookie_id, item_id, question, answer = row
+
+            # 将建议写入商品知识库
+            if item_id:
+                cursor.execute('''
+                SELECT knowledge_base FROM item_info WHERE cookie_id = ? AND item_id = ?
+                ''', (cookie_id, item_id))
+                existing = cursor.fetchone()
+                if existing:
+                    kb = existing[0] or ""
+                    new_entry = f"\n【AI建议】\nQ: {question}\nA: {answer}"
+                    cursor.execute('''
+                    UPDATE item_info SET knowledge_base = ?, kb_updated_at = CURRENT_TIMESTAMP
+                    WHERE cookie_id = ? AND item_id = ?
+                    ''', (kb + new_entry, cookie_id, item_id))
+                else:
+                    new_entry = f"【AI建议】\nQ: {question}\nA: {answer}"
+                    cursor.execute('''
+                    INSERT INTO item_info (cookie_id, item_id, knowledge_base, kb_updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (cookie_id, item_id, new_entry))
+
+        # 更新建议状态
+        db_manager.update_suggestion_status(suggestion_id, 'approved')
+        logger.info(f"知识库建议 #{suggestion_id} 已审核通过并写入商品 {item_id} 知识库")
+        return {"success": True, "message": "建议已审核通过并写入知识库"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"审核知识库建议失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/api/memory/knowledge-suggestions/{suggestion_id}/reject')
+async def reject_knowledge_suggestion(suggestion_id: int, _: None = Depends(require_auth)):
+    """拒绝知识库建议"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.update_suggestion_status(suggestion_id, 'rejected')
+        if not success:
+            raise HTTPException(status_code=404, detail="建议不存在或已处理")
+        return {"success": True, "message": "建议已拒绝"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"拒绝知识库建议失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/memory/customer-profiles/{cookie_id}')
+async def get_customer_profiles_api(cookie_id: str, _: None = Depends(require_auth)):
+    """获取客户画像列表（管理后台查看用）"""
+    from db_manager import db_manager
+    try:
+        with db_manager.lock:
+            cursor = db_manager.conn.cursor()
+            cursor.execute('''
+            SELECT customer_id, item_id, customer_type, type_confidence,
+                   profile_summary, communication_strategy, conversation_count,
+                   last_interaction
+            FROM customer_profiles WHERE cookie_id = ?
+            ORDER BY updated_at DESC LIMIT 100
+            ''', (cookie_id,))
+            profiles = [{
+                'customer_id': r[0], 'item_id': r[1], 'customer_type': r[2],
+                'type_confidence': r[3], 'profile_summary': r[4],
+                'communication_strategy': r[5], 'conversation_count': r[6],
+                'last_interaction': r[7]
+            } for r in cursor.fetchall()]
+        return {"success": True, "data": profiles}
+    except Exception as e:
+        logger.error(f"获取客户画像列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/memory/strategy-templates/{cookie_id}')
+async def get_strategy_templates_api(cookie_id: str, _: None = Depends(require_auth)):
+    """获取策略模板列表（管理后台查看用）"""
+    from db_manager import db_manager
+    try:
+        with db_manager.lock:
+            cursor = db_manager.conn.cursor()
+            cursor.execute('''
+            SELECT customer_type, strategy_text, success_count, fail_count,
+                   effectiveness_score, is_active, updated_at
+            FROM strategy_templates
+            WHERE cookie_id = ? OR cookie_id = '__default__'
+            ORDER BY customer_type, effectiveness_score DESC
+            ''', (cookie_id,))
+            templates = [{
+                'customer_type': r[0], 'strategy_text': r[1],
+                'success_count': r[2], 'fail_count': r[3],
+                'effectiveness_score': r[4], 'is_active': bool(r[5]),
+                'updated_at': r[6]
+            } for r in cursor.fetchall()]
+        return {"success": True, "data": templates}
+    except Exception as e:
+        logger.error(f"获取策略模板列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== 前端 SPA Catch-All 路由 ====================
