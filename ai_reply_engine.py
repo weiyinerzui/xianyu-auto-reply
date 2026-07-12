@@ -538,6 +538,27 @@ class AIReplyEngine:
                 except Exception as mem_err:
                     logger.debug(f"记忆系统注入失败（不影响回复）: {mem_err}")
 
+                # 🔧 方案B：记忆层 token 上限控制（防膨胀挤占对话历史）
+                # 粗估 token ≈ 字符数/3（跨中英文），软上限 1000 token ≈ 3000 字符
+                MEMORY_TOKEN_BUDGET = 3000
+                if len(memory_context) > MEMORY_TOKEN_BUDGET:
+                    # 按优先级截断：保留 客户画像 > 客户类型 > 沟通策略 > 经验 > 实时判断指引
+                    # 简单策略：保留头部（画像/类型/策略），尾部（经验/指引）超长则丢弃指引
+                    guide_marker = "\n【实时判断指引】"
+                    if guide_marker in memory_context:
+                        head = memory_context.split(guide_marker)[0]
+                        if len(head) <= MEMORY_TOKEN_BUDGET:
+                            memory_context = head  # 丢弃实时判断指引（最低优先级）
+                            logger.info(f"记忆层超长({len(memory_context)}>{MEMORY_TOKEN_BUDGET}字符)，已丢弃实时判断指引")
+                        else:
+                            memory_context = head[:MEMORY_TOKEN_BUDGET] + "...(已截断)"
+                            logger.warning(f"记忆层仍超长，硬截断至{MEMORY_TOKEN_BUDGET}字符")
+                    else:
+                        memory_context = memory_context[:MEMORY_TOKEN_BUDGET] + "...(已截断)"
+                        logger.warning(f"记忆层超长，硬截断至{MEMORY_TOKEN_BUDGET}字符")
+                if memory_context:
+                    logger.info(f"记忆层注入完成: {len(memory_context)}字符, 客户类型={customer_type}")
+
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
 
@@ -832,12 +853,23 @@ class MemoryEvolutionService:
         # 调AI总结
         summary = await self._summarize_conversation(conv_text, cookie_id)
         if not summary:
+            logger.info(f"记忆进化跳过(无AI总结): user={user_id} item={item_id} msgs={len(group['messages'])}")
             return
-        
+
         # 提取客户类型（核心判断）
         customer_type = summary.get('customer_type')
         type_confidence = summary.get('type_confidence', 0.5)
         personalized_strategy = summary.get('personalized_strategy')
+
+        # P0′ 可观测性：本轮分析产出汇总
+        lessons_n = len(summary.get('lessons', []))
+        suggestions_n = len(summary.get('knowledge_suggestions', []))
+        new_strategy = summary.get('new_strategy_template')
+        logger.info(
+            f"记忆进化产出: user={user_id} item={item_id} msgs={len(group['messages'])} "
+            f"类型={customer_type} 置信度={type_confidence} 经验={lessons_n}条 知识建议={suggestions_n}条 "
+            f"新策略={'是' if new_strategy else '否'}"
+        )
         
         # 更新客户画像（商品级隔离）
         if summary.get('customer_profile') or customer_type:
@@ -859,6 +891,7 @@ class MemoryEvolutionService:
                 logger.error(f"更新客户画像失败: {e}")
         
         # 存储经验（带客户类型标签）
+        lessons_added = 0
         for lesson in summary.get('lessons', []):
             try:
                 db_manager.add_lesson(
@@ -868,10 +901,14 @@ class MemoryEvolutionService:
                     conv_ids,
                     customer_type=customer_type
                 )
+                lessons_added += 1
             except Exception as e:
                 logger.error(f"添加经验失败: {e}")
-        
+        if lessons_added:
+            logger.info(f"经验已入库: {lessons_added}条 (item={item_id} 类型={customer_type})")
+
         # 存储知识库建议
+        suggestions_added = 0
         for suggestion in summary.get('knowledge_suggestions', []):
             try:
                 db_manager.add_suggestion(
@@ -880,8 +917,11 @@ class MemoryEvolutionService:
                     suggestion.get('answer', ''),
                     conv_ids
                 )
+                suggestions_added += 1
             except Exception as e:
                 logger.error(f"添加知识库建议失败: {e}")
+        if suggestions_added:
+            logger.info(f"知识建议已入库(待审核): {suggestions_added}条 (item={item_id})")
         
         # 策略进化：如果AI建议了新策略模板，且客户类型明确，则添加到策略库
         new_strategy = summary.get('new_strategy_template')
