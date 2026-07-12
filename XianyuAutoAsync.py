@@ -4808,22 +4808,9 @@ class XianyuLive:
             rule = delivery_rules[0]
             logger.info(f"✅ 唯一匹配发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
 
-            # 保存商品信息到数据库（需要有商品标题才保存）
-            # 尝试获取商品标题
-            item_title_for_save = None
-            try:
-                from db_manager import db_manager
-                db_item_info = db_manager.get_item_info(self.cookie_id, item_id)
-                if db_item_info:
-                    item_title_for_save = db_item_info.get('item_title', '').strip()
-            except:
-                pass
-
-            # 如果有商品标题，则保存商品信息
-            if item_title_for_save:
-                await self.save_item_info_to_db(item_id, search_text, item_title_for_save)
-            else:
-                logger.warning(f"跳过保存商品信息：缺少商品标题 - {item_id}")
+            # 注意：此处曾在自动发货路径调用 save_item_info_to_db(item_id, search_text, ...)
+            # 导致每次卖出商品都会用「标题+旧item_detail拼接」覆盖 item_detail，造成标题重复追加。
+            # 商品信息已在 save_items_list_to_db 中保存，自动发货路径无需再写 item_detail。已移除。
 
             # 详细的匹配结果日志
             if rule.get('is_multi_spec'):
