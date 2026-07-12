@@ -4357,9 +4357,11 @@ class DBManager:
                     if item_data is not None and item_data:
                         # 处理字符串类型的详情数据
                         if isinstance(item_data, str):
+                            # 防御：仅在现有 item_detail 为空时才写入，避免覆盖已抓取的详情或造成重复追加
                             cursor.execute('''
                             UPDATE item_info SET
-                                item_detail = ?, updated_at = CURRENT_TIMESTAMP
+                                item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') THEN ? ELSE item_detail END,
+                                updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
                             ''', (item_data, cookie_id, item_id))
                         else:
