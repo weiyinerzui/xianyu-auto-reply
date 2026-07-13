@@ -115,7 +115,16 @@ AUTO_REPLY = config.get('AUTO_REPLY', {
     }
 })
 MANUAL_MODE = config.get('MANUAL_MODE', {})
-LOG_CONFIG = config.get('LOG_CONFIG', {}) 
+LOG_CONFIG = config.get('LOG_CONFIG', {})
+RISK_CONTROL = config.get('RISK_CONTROL', {
+    'backoff_escalation_factor': 1.5,              # 退避指数因子：每次失败 ×1.5
+    'backoff_max_cap_seconds': 3600,                # 退避上限：1小时
+    'consecutive_failure_protection_threshold': 5,  # 连续失败5次→暂停账号
+    'token_refresh_dedup_window_seconds': 60,       # 60秒内有成功结果→直接复用
+    'token_retry_min_wait_seconds': 180,            # token重试最少间隔3分钟
+    'post_slider_retry_delay_min': 5.0,             # 滑块后重试延迟下限
+    'post_slider_retry_delay_max': 10.0,            # 滑块后重试延迟上限
+})
 _cookies_raw = config.get('COOKIES', [])
 if isinstance(_cookies_raw, list):
     COOKIES_LIST = _cookies_raw
