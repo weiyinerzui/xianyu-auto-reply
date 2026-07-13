@@ -17,7 +17,7 @@ from config import (
     WEBSOCKET_URL, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
     TOKEN_REFRESH_INTERVAL, TOKEN_RETRY_INTERVAL, COOKIES_STR,
     LOG_CONFIG, AUTO_REPLY, DEFAULT_HEADERS, WEBSOCKET_HEADERS,
-    APP_CONFIG, API_ENDPOINTS
+    APP_CONFIG, API_ENDPOINTS, RISK_CONTROL
 )
 import sys
 import aiohttp
@@ -201,6 +201,12 @@ class XianyuLive:
     # 类级别的密码登录时间记录，用于防止重复登录
     _last_password_login_time = {}  # {cookie_id: timestamp}
     _password_login_cooldown = 60  # 密码登录冷却时间：60秒
+
+    # 类级别的风控退避状态：{cookie_id: {'until': float, 'reason': str, 'seconds': int, 'consecutive_count': int, ...}}
+    _password_login_failure_backoff = {}
+
+    # Token刷新异步锁，防止多调用方并发刷新
+    _token_refresh_locks = defaultdict(asyncio.Lock)
     
     def _safe_str(self, e):
         """安全地将异常转换为字符串"""
@@ -470,8 +476,132 @@ class XianyuLive:
             self.cookie_refresh_task = None
             logger.info(f"【{self.cookie_id}】后台任务引用已全部重置")
 
+    # ==================== 风控退避管理（借鉴 xianyu-auto-reply-fix） ====================
+
+    @classmethod
+    def _cleanup_password_login_failure_backoff(cls):
+        """清理已过期的退避状态"""
+        now = time.time()
+        expired = [
+            cookie_id for cookie_id, state in cls._password_login_failure_backoff.items()
+            if state.get('until', 0) <= now
+        ]
+        for cookie_id in expired:
+            cls._password_login_failure_backoff.pop(cookie_id, None)
+
+    @classmethod
+    def get_password_login_failure_backoff(cls, cookie_id: str):
+        """获取指定账号的退避状态"""
+        cls._cleanup_password_login_failure_backoff()
+        return cls._password_login_failure_backoff.get(cookie_id)
+
+    @classmethod
+    def clear_password_login_failure_backoff(cls, cookie_id: str):
+        """清除指定账号的退避状态（登录成功后调用）"""
+        cls._password_login_failure_backoff.pop(cookie_id, None)
+
+    @classmethod
+    def set_password_login_failure_backoff(cls, cookie_id: str, reason: str, seconds: int):
+        """设置风控退避时间，采用指数退避：actual = base × escalation^(consecutive-1)"""
+        if not cookie_id or seconds <= 0:
+            return
+        previous_state = cls._password_login_failure_backoff.get(cookie_id) or {}
+        previous_reason = previous_state.get('reason')
+        previous_count = int(previous_state.get('consecutive_count', 0) or 0)
+        # 只有相同原因才累计计数
+        consecutive_count = previous_count + 1 if previous_reason == reason else 1
+        escalation_factor = float(RISK_CONTROL.get('backoff_escalation_factor', 1.5) or 1.5)
+        max_cap = max(seconds, int(RISK_CONTROL.get('backoff_max_cap_seconds', 3600) or 3600))
+        actual_seconds = int(round(min(seconds * (escalation_factor ** max(0, consecutive_count - 1)), max_cap)))
+        actual_seconds = max(seconds, actual_seconds)
+        now = time.time()
+        cls._password_login_failure_backoff[cookie_id] = {
+            'until': now + actual_seconds,
+            'reason': reason,
+            'seconds': actual_seconds,
+            'base_seconds': seconds,
+            'consecutive_count': consecutive_count,
+            'created_at': now,
+        }
+        logger.warning(
+            f"【{cookie_id}】设置风控退避: 原因={reason}, "
+            f"基础={seconds}s, 实际={actual_seconds}s (第{consecutive_count}次), "
+            f"将持续到 {time.strftime('%H:%M:%S', time.localtime(now + actual_seconds))}"
+        )
+
+    @staticmethod
+    def _is_counted_failure_reason(reason: str) -> bool:
+        """判断是否为应计数的失败原因（只有 slider_failed 和 risk_control 会累计触发账号保护）"""
+        return str(reason or '').strip() in {'slider_failed', 'risk_control'}
+
+    def _get_active_backoff(self, current_time: float = None):
+        """获取当前生效的退避状态，返回 None 表示无退避"""
+        current_time = current_time or time.time()
+        backoff = XianyuLive.get_password_login_failure_backoff(self.cookie_id)
+        if not backoff:
+            return None
+        remaining_time = backoff.get('until', 0) - current_time
+        if remaining_time <= 0:
+            return None
+        state = dict(backoff)
+        state['remaining_time'] = int(remaining_time)
+        return state
+
+    def _should_skip_token_refresh_for_backoff(self, current_time: float = None) -> bool:
+        """判断当前是否处于退避期，应跳过 token 刷新"""
+        backoff = self._get_active_backoff(current_time)
+        if not backoff:
+            return False
+        remaining = backoff.get('remaining_time', 0)
+        reason = backoff.get('reason', 'unknown')
+        logger.info(
+            f"【{self.cookie_id}】处于风控退避期 (原因: {reason}, 剩余: {remaining}s)，跳过自动Token刷新"
+        )
+        return True
+
+    async def _protect_account_for_consecutive_failures(self, backoff_state=None) -> bool:
+        """连续失败达阈值后暂停账号，避免继续放大风控"""
+        state = backoff_state or self._get_active_backoff()
+        if not state:
+            return False
+        reason = str(state.get('reason') or '').strip()
+        if not self._is_counted_failure_reason(reason):
+            return False
+        threshold = max(1, int(RISK_CONTROL.get('consecutive_failure_protection_threshold', 5) or 5))
+        consecutive_count = int(state.get('consecutive_count', 0) or 0)
+        if consecutive_count < threshold:
+            return False
+        pause_reason = f"连续{consecutive_count}次{reason}"
+        logger.error(
+            f"【{self.cookie_id}】⚠️ {pause_reason}，已触发账号保护，暂停自动恢复以避免继续放大风控"
+        )
+        # 发送通知
+        try:
+            await self.send_token_refresh_notification(
+                f"账号已连续触发 {consecutive_count} 次 {reason}，系统已暂停自动恢复，请手动处理（重新扫码登录）",
+                "consecutive_failure_protected"
+            )
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】发送账号保护通知失败: {self._safe_str(e)}")
+        return True
+
     def _calculate_retry_delay(self, error_msg: str, error_type: str = "") -> int:
-        """根据错误类型和失败次数计算重试延迟"""
+        """根据错误类型和失败次数计算重试延迟（增强：风控退避期返回长延迟）"""
+        # 检查是否处于风控退避期
+        backoff = self._get_active_backoff()
+        if backoff:
+            remaining = backoff.get('remaining_time', 0)
+            reason = backoff.get('reason', 'unknown')
+            # 退避期内至少等 300s 或剩余时间（取较大值）
+            return max(300, remaining)
+
+        # 检查是否处于密码登录冷却期
+        last_login = XianyuLive._last_password_login_time.get(self.cookie_id, 0)
+        if last_login > 0:
+            time_since = time.time() - last_login
+            if time_since < XianyuLive._password_login_cooldown:
+                return max(60, int(XianyuLive._password_login_cooldown - time_since))
+
         # WebSocket意外断开 - 短延迟
         if "no close frame received or sent" in error_msg:
             return min(3 * self.connection_failures, 15)
@@ -479,6 +609,10 @@ class XianyuLive:
         # 网络连接问题 - 长延迟
         elif "Connection refused" in error_msg or "timeout" in error_msg.lower() or "Timeout" in error_type:
             return min(10 * self.connection_failures, 60)
+        
+        # Token获取失败/Session过期 - 中长延迟（避免高频重试触发风控）
+        elif "Token获取失败" in error_msg or "Session过期" in error_msg or "FAIL_SYS" in error_msg:
+            return min(30 * self.connection_failures, 180)
         
         # 其他未知错误 - 中等延迟
         else:
@@ -1352,7 +1486,30 @@ class XianyuLive:
         """
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
-        
+
+        # === 风控退避 + 去重窗口（借鉴 xianyu-auto-reply-fix）===
+        # 1. 并发锁：防止多调用方同时触发 token 刷新
+        lock = XianyuLive._token_refresh_locks[self.cookie_id]
+        if lock.locked():
+            logger.info(f"【{self.cookie_id}】Token刷新已有执行中任务，等待当前流程完成后复用结果")
+        async with lock:
+            # 2. 去重窗口：60秒内已有成功结果→直接复用
+            dedup_window = max(5, int(RISK_CONTROL.get('token_refresh_dedup_window_seconds', 60) or 60))
+            if (
+                captcha_retry_count == 0
+                and self.current_token
+                and getattr(self, 'last_token_refresh_status', None) == "success"
+                and (time.time() - self.last_token_refresh_time) < dedup_window
+            ):
+                logger.info(f"【{self.cookie_id}】最近{dedup_window}秒内已有成功的Token刷新结果，直接复用当前Token")
+                return self.current_token
+
+            # 3. 退避检查：处于风控退避期→跳过刷新
+            if captcha_retry_count == 0 and self._should_skip_token_refresh_for_backoff():
+                # 检查是否需要触发账号保护
+                await self._protect_account_for_consecutive_failures()
+                return None
+
         try:
             logger.info(f"【{self.cookie_id}】开始刷新token... (滑块验证重试次数: {captcha_retry_count})")
             # 标记本次刷新状态
@@ -1555,6 +1712,8 @@ class XianyuLive:
                                 logger.info(f"【{self.cookie_id}】Token刷新成功")
                                 # 标记为成功
                                 self.last_token_refresh_status = "success"
+                                # 清除风控退避状态（登录成功）
+                                XianyuLive.clear_password_login_failure_backoff(self.cookie_id)
                                 return new_token
 
                     # 检查是否需要滑块验证
@@ -1613,6 +1772,12 @@ class XianyuLive:
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败")
 
+                                # 设置风控退避（slider_failed，指数退避）
+                                base_seconds = max(30, int(RISK_CONTROL.get('token_retry_min_wait_seconds', 180) or 180) // 2)
+                                XianyuLive.set_password_login_failure_backoff(self.cookie_id, "slider_failed", base_seconds)
+                                # 检查是否需要触发账号保护
+                                await self._protect_account_for_consecutive_failures()
+
                                 # 更新风控日志为失败状态
                                 if 'log_id' in locals() and log_id:
                                     try:
@@ -1666,6 +1831,13 @@ class XianyuLive:
                                 # 刷新失败时继续执行原有的失败处理逻辑
 
                     logger.error(f"【{self.cookie_id}】Token刷新失败: {res_json}")
+
+                    # 检查是否为风控类错误，设置风控退避
+                    res_str = json.dumps(res_json, ensure_ascii=False) if isinstance(res_json, dict) else str(res_json)
+                    if 'FAIL_SYS_USER_VALIDATE' in res_str or 'RGV587' in res_str or 'FAIL_SYS' in res_str:
+                        base_seconds = int(RISK_CONTROL.get('token_retry_min_wait_seconds', 180) or 180)
+                        XianyuLive.set_password_login_failure_backoff(self.cookie_id, "risk_control", base_seconds)
+                        await self._protect_account_for_consecutive_failures()
 
                     # 清空当前token，确保下次重试时重新获取
                     self.current_token = None
