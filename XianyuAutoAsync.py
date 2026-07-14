@@ -2411,6 +2411,10 @@ class XianyuLive:
                 # 记录密码登录时间，防止重复登录
                 XianyuLive._last_password_login_time[self.cookie_id] = time.time()
                 logger.warning(f"【{self.cookie_id}】已记录密码登录时间，冷却期 {XianyuLive._password_login_cooldown} 秒")
+
+                # 密码登录成功 → 清除风控退避状态
+                XianyuLive.clear_password_login_failure_backoff(self.cookie_id)
+                logger.info(f"【{self.cookie_id}】已清除风控退避状态（密码登录成功）")
                 
                 # 更新cookies并重启任务
                 update_success = await self._update_cookies_and_restart(new_cookies_str)
@@ -6256,6 +6260,10 @@ class XianyuLive:
 
             if success:
                 logger.info(f"【{target_cookie_id}】真实Cookie已成功保存到数据库")
+
+                # 扫码登录成功 → 清除风控退避状态，避免新实例启动时被旧退避阻塞
+                XianyuLive.clear_password_login_failure_backoff(target_cookie_id)
+                logger.info(f"【{target_cookie_id}】已清除风控退避状态（扫码登录成功）")
 
                 # 如果当前实例的cookie_id匹配，更新实例的cookie信息
                 if target_cookie_id == self.cookie_id:
