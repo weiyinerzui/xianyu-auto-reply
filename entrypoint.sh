@@ -23,17 +23,27 @@ mkdir -p /app/data /app/logs /app/backups /app/static/uploads/images
 mkdir -p /app/trajectory_history
 echo "✓ 目录创建完成"
 
-# 启动 Xvfb 虚拟显示器（用于滑块验证的浏览器）
+# 启动 Xvfb 虚拟显示器（用于滑块验证的有头浏览器，规避 headless 指纹检测）
 echo "启动 Xvfb 虚拟显示器..."
 # 检查是否安装了 xvfb
 if command -v Xvfb &> /dev/null; then
-    # 先杀掉可能存在的旧进程
+    # 清理可能存在的旧锁文件和旧进程
+    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
     pkill -f "Xvfb :99" 2>/dev/null || true
-    # 启动 Xvfb 在 display :99
-    Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+    # 用 nohup + disown 确保 Xvfb 在 exec 替换 shell 后不会被回收
+    nohup Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > /tmp/xvfb.log 2>&1 &
+    XVFB_PID=$!
+    disown $XVFB_PID 2>/dev/null || true
     export DISPLAY=:99
-    sleep 1
-    echo "✓ Xvfb 已启动 (DISPLAY=:99)"
+    # 等待 Xvfb 就绪
+    sleep 1.5
+    if kill -0 $XVFB_PID 2>/dev/null; then
+        echo "✓ Xvfb 已启动 (PID=$XVFB_PID, DISPLAY=:99)"
+    else
+        echo "⚠ Xvfb 启动失败，查看 /tmp/xvfb.log，滑块验证将降级为 headless 模式"
+        cat /tmp/xvfb.log 2>/dev/null | tail -3
+        unset DISPLAY
+    fi
 else
     echo "⚠ Xvfb 未安装，滑块验证将使用纯 headless 模式"
 fi
