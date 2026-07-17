@@ -244,26 +244,26 @@ strategy_stats = RetryStrategyStats()
 # 滑块验证策略配置
 SLIDER_STRATEGIES = {
     'ultra_fast': {
-        'steps_range': [6, 12],        # 极少步数，模拟极速滑动
-        'delay_range': [0.002, 0.008], # 极短延迟
-        'overshoot_range': [1.03, 1.06], # 收紧超调，避免过冲触发风控（A3）
+        'steps_range': [20, 35],        # 接近人类的步数（原 6-12 太少，易被风控识别）
+        'delay_range': [0.012, 0.025],  # 12-25ms 接近人类滑动间隔（原 2-8ms 是机器级速度）
+        'overshoot_range': [1.02, 1.08], # 适度超调模拟人类过冲
         'description': '极速模式'
     },
     'fast': {
-        'steps_range': [8, 12],        # 较少步数
-        'delay_range': [0.005, 0.015], # 较短延迟
+        'steps_range': [25, 45],        # 较多步数（原 8-12）
+        'delay_range': [0.018, 0.035], # 较短延迟（原 5-15ms）
         'overshoot_range': [1.5, 1.8], # 适度超调
         'description': '快速模式'
     },
     'normal': {
-        'steps_range': [15, 25],       # 中等步数
-        'delay_range': [0.015, 0.030], # 中等延迟
+        'steps_range': [35, 60],       # 中等步数（原 15-25）
+        'delay_range': [0.025, 0.045], # 中等延迟（原 15-30ms）
         'overshoot_range': [1.2, 1.4], # 较小超调
         'description': '正常模式'
     },
     'slow': {
-        'steps_range': [30, 50],       # 较多步数
-        'delay_range': [0.025, 0.045], # 较长延迟
+        'steps_range': [50, 80],       # 较多步数（原 30-50）
+        'delay_range': [0.035, 0.06], # 较长延迟（原 25-45ms）
         'overshoot_range': [1.05, 1.15], # 极小超调
         'description': '谨慎模式'
     }
@@ -280,6 +280,12 @@ class XianyuSliderStealth:
         self.user_id = user_id
         self.enable_learning = enable_learning
         self.headless = headless  # 是否使用无头模式
+        # 如果有 DISPLAY 环境变量（Xvfb 已启动），自动切换为有头模式以规避 headless 指纹检测
+        if not self.headless:
+            pass  # 调用方已显式指定有头模式
+        elif os.getenv('DISPLAY'):
+            self.headless = False
+            logger.info(f"【{self.pure_user_id}】检测到 DISPLAY={os.getenv('DISPLAY')}，自动切换为有头模式（规避 headless 指纹检测）")
         self.browser = None
         self.page = None
         self.context = None
@@ -368,62 +374,45 @@ class XianyuSliderStealth:
             
             # 启动浏览器，使用随机特征
             logger.info(f"【{self.pure_user_id}】启动浏览器，headless模式: {self.headless}")
+            # 有头模式下移除暴露自动化的参数，保留最小必要集
+            base_args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                f"--window-size={browser_features['window_size']}",
+                f"--lang={browser_features['lang']}",
+                f"--accept-lang={browser_features['accept_lang']}",
+                "--disable-extensions",
+                "--disable-plugins",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--disable-translate",
+                "--no-default-browser-check",
+                "--disable-logging",
+                "--disable-notifications",
+                "--disable-popup-blocking",
+                "--disable-prompt-on-repost",
+                "--disable-hang-monitor",
+                "--disable-client-side-phishing-detection",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-domain-reliability",
+                "--disable-breakpad",
+                "--disable-component-update",
+                "--password-store=basic",
+                "--use-mock-keychain",
+            ]
+            if self.headless:
+                # headless 模式保留 GPU 禁用和自动化标记隐藏（降级方案）
+                base_args.extend([
+                    "--disable-gpu",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-features=VizDisplayCompositor",
+                ])
             self.browser = self.playwright.chromium.launch(
                 headless=self.headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-accelerated-2d-canvas",
-                    "--no-first-run",
-                    "--no-zygote",
-                    "--disable-gpu",
-                    "--disable-web-security",
-                    "--disable-features=VizDisplayCompositor",
-                    "--start-maximized",  # 窗口最大化
-                    f"--window-size={browser_features['window_size']}",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    f"--lang={browser_features['lang']}",
-                    f"--accept-lang={browser_features['accept_lang']}",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-extensions",
-                    "--disable-plugins",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--hide-scrollbars",
-                    "--mute-audio",
-                    "--no-default-browser-check",
-                    "--disable-logging",
-                    "--disable-permissions-api",
-                    "--disable-notifications",
-                    "--disable-popup-blocking",
-                    "--disable-prompt-on-repost",
-                    "--disable-hang-monitor",
-                    "--disable-client-side-phishing-detection",
-                    "--disable-component-extensions-with-background-pages",
-                    "--disable-background-mode",
-                    "--disable-domain-reliability",
-                    "--disable-features=TranslateUI",
-                    "--disable-ipc-flooding-protection",
-                    "--disable-field-trial-config",
-                    "--disable-background-networking",
-                    "--disable-back-forward-cache",
-                    "--disable-breakpad",
-                    "--disable-component-update",
-                    "--force-color-profile=srgb",
-                    "--metrics-recording-only",
-                    "--password-store=basic",
-                    "--use-mock-keychain",
-                    "--no-service-autorun",
-                    "--export-tagged-pdf",
-                    "--disable-search-engine-choice-screen",
-                    "--unsafely-disable-devtools-self-xss-warnings",
-                    "--edge-skip-compat-layer-relaunch",
-                    "--allow-pre-commit-input"
-                ]
+                args=base_args
             )
             
             # 验证浏览器已启动
