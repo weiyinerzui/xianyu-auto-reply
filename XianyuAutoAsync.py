@@ -1967,7 +1967,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=True  # 使用无头模式
+                    headless=bool(not os.getenv('DISPLAY'))  # 有 DISPLAY 时用有头模式，规避 headless 指纹检测
                 )
 
                 # 在线程池中执行滑块验证
