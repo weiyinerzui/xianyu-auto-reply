@@ -2065,14 +2065,22 @@ class XianyuLive:
 
                     return cookies_str
                 else:
-                    logger.error(f"【{self.cookie_id}】滑块验证失败")
+                    logger.error(f"【{self.cookie_id}】滑块自动验证失败，进入手动远程控制模式...")
 
                     # 记录滑块验证失败到日志文件
-                    log_captcha_event(self.cookie_id, "滑块验证失败", False,
-                        f"XianyuSliderStealth执行失败, 环境: {'Docker' if os.getenv('DOCKER_ENV') else '本地'}")
+                    log_captcha_event(self.cookie_id, "滑块自动验证失败，切换手动模式", False,
+                        f"自动验证失败，启动远程控制会话等待人工操作")
+
+                    # ===== 手动远程控制模式 =====
+                    # 自动滑块失败后，打开验证页面并创建远程控制会话，
+                    # 等待用户通过 Web UI (/api/captcha/control/{session_id}) 手动拖动滑块
+                    manual_cookies = await self._handle_manual_captcha(verification_url)
+
+                    if manual_cookies:
+                        logger.info(f"【{self.cookie_id}】手动滑块验证成功！")
+                        return manual_cookies
 
                     # 发送通知（检查WebSocket连接状态）
-                    # 只有在WebSocket未连接时才发送通知，已连接说明可能是暂时性问题
                     is_ws_connected = (
                         self.connection_state == ConnectionState.CONNECTED and 
                         self.ws and 
@@ -2080,7 +2088,7 @@ class XianyuLive:
                     )
                     
                     if is_ws_connected:
-                        logger.info(f"【{self.cookie_id}】WebSocket连接正常，滑块验证失败可能是暂时的，跳过通知")
+                        logger.info(f"【{self.cookie_id}】WebSocket连接正常，手动滑块验证未完成，跳过通知")
                     else:
                         logger.warning(f"【{self.cookie_id}】WebSocket未连接，发送滑块验证失败通知")
                         await self.send_token_refresh_notification(
@@ -2133,6 +2141,120 @@ class XianyuLive:
 
         except Exception as e:
             logger.error(f"【{self.cookie_id}】处理滑块验证时出错: {self._safe_str(e)}")
+            return None
+
+    async def _handle_manual_captcha(self, verification_url: str) -> str:
+        """手动远程控制模式：自动滑块失败后，打开验证页面等待用户手动完成
+        
+        流程：用 Playwright 有头模式打开验证URL -> 创建远程控制会话 -> 通知用户 -> 
+        轮询等待验证完成（最多5分钟）-> 提取cookies
+        """
+        try:
+            from playwright.async_api import async_playwright
+            from utils.captcha_remote_control import captcha_controller
+            
+            session_id = f"{self.cookie_id}_{int(time.time())}"
+            logger.info(f"【{self.cookie_id}】启动手动验证会话: {session_id}")
+            
+            pw = await async_playwright().start()
+            browser_args = [
+                "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                "--no-first-run", "--window-size=1280,800", "--disable-extensions",
+                "--no-default-browser-check", "--disable-logging",
+            ]
+            headless = not bool(os.getenv('DISPLAY'))
+            browser = await pw.chromium.launch(headless=headless, args=browser_args)
+            context = await browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+            )
+            page = await context.new_page()
+            
+            logger.info(f"【{self.cookie_id}】手动验证：导航到验证页面...")
+            await page.goto(verification_url, wait_until='networkidle', timeout=30000)
+            await asyncio.sleep(1)
+            
+            await captcha_controller.create_session(session_id, page)
+            logger.info(f"【{self.cookie_id}】远程控制会话已创建: {session_id}")
+            
+            control_url = f"http://localhost:8080/api/captcha/control/{session_id}"
+            logger.warning(f"【{self.cookie_id}】手动滑块验证：请访问 {control_url}")
+            logger.warning(f"【{self.cookie_id}】等待手动验证... (最多5分钟)")
+            await self.send_token_refresh_notification(
+                f"需要手动完成滑块验证，请访问: {control_url}",
+                "manual_captcha_required",
+                verification_url=control_url
+            )
+            
+            # 轮询等待验证完成（最多5分钟）
+            max_wait = 300
+            check_interval = 2
+            elapsed = 0
+            while elapsed < max_wait:
+                await asyncio.sleep(check_interval)
+                elapsed += check_interval
+                if captcha_controller.is_completed(session_id):
+                    logger.info(f"【{self.cookie_id}】手动滑块验证完成！(耗时 {elapsed}s)")
+                    break
+                if elapsed % 30 == 0:
+                    try:
+                        await captcha_controller.update_screenshot(session_id)
+                    except:
+                        pass
+                    if elapsed % 60 == 0:
+                        logger.info(f"【{self.cookie_id}】仍在等待手动验证... ({elapsed}s/{max_wait}s)")
+            else:
+                logger.warning(f"【{self.cookie_id}】手动验证等待超时 ({max_wait}s)")
+            
+            # 提取验证成功后的 cookies
+            cookies_result = None
+            if captcha_controller.is_completed(session_id):
+                try:
+                    browser_cookies = await context.cookies()
+                    logger.info(f"【{self.cookie_id}】手动验证成功，获取到 {len(browser_cookies)} 个 cookies")
+                    updated_cookies = self.cookies.copy()
+                    new_count = 0
+                    update_count = 0
+                    for cookie in browser_cookies:
+                        name = cookie.get('name', '')
+                        value = cookie.get('value', '')
+                        if name and value:
+                            if name in updated_cookies:
+                                if updated_cookies[name] != value:
+                                    updated_cookies[name] = value
+                                    update_count += 1
+                            else:
+                                updated_cookies[name] = value
+                                new_count += 1
+                    cookies_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items()])
+                    logger.info(f"【{self.cookie_id}】Cookie合并完成: 新增{new_count}个, 更新{update_count}个, 总计{len(updated_cookies)}个")
+                    self.cookies_str = cookies_str
+                    self.cookies = updated_cookies
+                    await self.update_config_cookies()
+                    XianyuLive.clear_password_login_failure_backoff(self.cookie_id)
+                    logger.info(f"【{self.cookie_id}】已清除风控退避状态（手动滑块验证成功）")
+                    cookies_result = cookies_str
+                    await self.send_token_refresh_notification(
+                        "手动滑块验证成功，cookies已自动更新",
+                        "manual_captcha_success"
+                    )
+                except Exception as e:
+                    logger.error(f"【{self.cookie_id}】提取手动验证cookies失败: {e}")
+            
+            # 清理
+            await captcha_controller.close_session(session_id)
+            try:
+                await browser.close()
+            except:
+                pass
+            try:
+                await pw.stop()
+            except:
+                pass
+            return cookies_result
+            
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】手动验证流程异常: {self._safe_str(e)}")
             return None
 
     async def _update_cookies_and_restart(self, new_cookies_str: str):
