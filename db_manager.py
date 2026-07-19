@@ -190,7 +190,8 @@ class DBManager:
                     cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN vision_api_key TEXT")
                 if 'vision_base_url' not in existing_columns:
                     cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN vision_base_url TEXT")
-                conn.commit()
+                self.conn.commit()
+                logger.info("ai_reply_settings 视觉模型字段迁移完成")
             except Exception as migration_e:
                 logger.warning(f"ai_reply_settings 视觉模型字段迁移失败（可能已存在）: {migration_e}")
 

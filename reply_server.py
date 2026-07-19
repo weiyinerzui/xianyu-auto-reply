@@ -4992,12 +4992,17 @@ def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_aut
     test_data 可包含：
     - message: 测试消息（可选，默认'你好'）
     - item_title/price/desc: 测试商品信息（可选）
-    - test_settings: 临时配置，用于测试未保存的配置（新增）
+    - test_settings: 文本模型临时配置
       - api_key: API密钥
       - base_url: API地址
       - model_name: 模型名称
+    - vision_test_settings: 视觉模型临时配置（新增）
+      - vision_api_key: 视觉API密钥
+      - vision_base_url: 视觉API地址
+      - vision_model_name: 视觉模型名称
     
-    如果提供了 test_settings，将使用临时配置进行测试（不保存到数据库）
+    如果提供了 test_settings，将使用临时文本模型配置进行测试（不保存到数据库）
+    如果提供了 vision_test_settings，将测试视觉模型连接（发送带图片的测试消息）
     否则使用数据库中已保存的配置
     """
     try:
@@ -5008,7 +5013,75 @@ def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_aut
         if cookie_id not in cookie_manager.manager.cookies:
             raise HTTPException(status_code=404, detail='账号不存在')
 
-        # 🔧 新增：优先使用前端传递的临时配置
+        # 🔧 新增：视觉模型连接测试
+        if 'vision_test_settings' in test_data and test_data['vision_test_settings']:
+            vision_cfg = test_data['vision_test_settings']
+            vision_api_key = vision_cfg.get('vision_api_key', '').strip()
+            vision_base_url = vision_cfg.get('vision_base_url', '').strip()
+            vision_model_name = vision_cfg.get('vision_model_name', '').strip()
+            
+            if not vision_api_key:
+                raise HTTPException(status_code=400, detail='视觉 API Key 不能为空')
+            if not vision_base_url:
+                raise HTTPException(status_code=400, detail='视觉 API 地址不能为空')
+            if not vision_model_name:
+                raise HTTPException(status_code=400, detail='视觉模型名称不能为空')
+            
+            logger.info(f"【视觉模型临时配置测试】cookie_id={cookie_id}, base_url={vision_base_url}, model={vision_model_name}")
+            
+            try:
+                from openai import OpenAI
+                test_client = OpenAI(api_key=vision_api_key, base_url=vision_base_url)
+                
+                # 构建多模态测试消息：文字 + 一个小测试图片URL
+                test_message = test_data.get('message', '请描述这张图片的内容')
+                # 使用一个极小的1x1白色PNG作为测试图片（不会消耗视觉模型大量token）
+                test_image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+                
+                logger.info(f"【视觉模型临时配置测试】开始调用 API: model={vision_model_name}")
+                
+                response = test_client.chat.completions.create(
+                    model=vision_model_name,
+                    messages=[
+                        {"role": "system", "content": "你是一个友好的助手"},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": test_message},
+                            {"type": "image_url", "image_url": {"url": test_image_url}}
+                        ]}
+                    ],
+                    max_tokens=50,
+                    temperature=0.7
+                )
+                
+                reply = response.choices[0].message.content.strip()
+                logger.info(f"【视觉模型临时配置测试】成功，回复: {reply[:50]}...")
+                return {
+                    "success": True,
+                    "message": "视觉模型测试成功！API 配置正确，连接正常。",
+                    "reply": reply
+                }
+                
+            except Exception as e:
+                logger.error(f"【视觉模型临时配置测试】失败: {e}")
+                import traceback
+                logger.error(f"详细错误: {traceback.format_exc()}")
+                
+                error_msg = str(e)
+                
+                if "authentication" in error_msg.lower() or "unauthorized" in error_msg.lower() or "api key" in error_msg.lower() or "401" in error_msg:
+                    raise HTTPException(status_code=400, detail="视觉 API Key 无效或已过期，请检查 API Key 是否正确")
+                elif "not found" in error_msg.lower() or "404" in error_msg:
+                    raise HTTPException(status_code=400, detail=f"视觉模型 '{vision_model_name}' 不存在，请检查模型名称是否正确")
+                elif "connection" in error_msg.lower() or "network" in error_msg.lower() or "timeout" in error_msg.lower():
+                    raise HTTPException(status_code=400, detail=f"无法连接到视觉 API 地址 '{vision_base_url}'，请检查网络或 URL 是否正确")
+                elif "rate limit" in error_msg.lower() or "429" in error_msg:
+                    raise HTTPException(status_code=400, detail="视觉 API 调用频率超限，请稍后再试")
+                elif "quota" in error_msg.lower() or "insufficient" in error_msg.lower():
+                    raise HTTPException(status_code=400, detail="视觉 API 额度不足，请检查账户余额")
+                else:
+                    raise HTTPException(status_code=400, detail=f"视觉模型测试失败: {error_msg[:200]}")
+
+        # 🔧 文本模型临时配置测试
         if 'test_settings' in test_data and test_data['test_settings']:
             # 使用临时配置进行测试（不保存到数据库）
             test_settings = test_data['test_settings']

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Settings as SettingsIcon, Save, Bot, Mail, RefreshCw, Key, Download, Upload, Archive, Eye, EyeOff, Copy } from 'lucide-react'
-import { getSystemSettings, updateSystemSettings, testAIConnection, testEmailSend, changePassword, downloadDatabaseBackup, uploadDatabaseBackup, reloadSystemCache, exportUserBackup, importUserBackup } from '@/api/settings'
+import { getSystemSettings, updateSystemSettings, testAIConnection, testVisionAIConnection, testEmailSend, changePassword, downloadDatabaseBackup, uploadDatabaseBackup, reloadSystemCache, exportUserBackup, importUserBackup } from '@/api/settings'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -31,6 +31,7 @@ export function Settings() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [testAccountId, setTestAccountId] = useState('')
   const [testingAI, setTestingAI] = useState(false)
+  const [testingVisionAI, setTestingVisionAI] = useState(false)
 
   // SMTP密码显示状态
   const [showSmtpPassword, setShowSmtpPassword] = useState(false)
@@ -121,6 +122,30 @@ export function Settings() {
       addToast({ type: 'error', message: 'AI 连接测试失败' })
     } finally {
       setTestingAI(false)
+    }
+  }
+
+  const handleTestVisionAI = async () => {
+    if (!testAccountId) {
+      addToast({ type: 'warning', message: '请先选择一个测试账号' })
+      return
+    }
+    setTestingVisionAI(true)
+    try {
+      const result = await testVisionAIConnection(testAccountId, {
+        vision_api_key: settings?.ai_vision_api_key,
+        vision_base_url: settings?.ai_vision_api_url,
+        vision_model_name: settings?.ai_vision_model,
+      })
+      if (result.success) {
+        addToast({ type: 'success', message: result.message || '视觉模型连接测试成功' })
+      } else {
+        addToast({ type: 'error', message: result.message || '视觉模型连接测试失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '视觉模型连接测试失败' })
+    } finally {
+      setTestingVisionAI(false)
     }
   }
 
@@ -501,6 +526,24 @@ export function Settings() {
                     className="input-ios"
                   />
                   <p className="text-xs text-slate-400 mt-1">如: google/gemini-3.5-flash、gpt-4o、qwen-vl-plus</p>
+                </div>
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <label className="input-label">测试账号</label>
+                    <Select
+                      value={testAccountId}
+                      onChange={setTestAccountId}
+                      options={accounts.map(a => ({ value: a.id, label: a.id }))}
+                      placeholder="选择账号"
+                    />
+                  </div>
+                  <button
+                    onClick={handleTestVisionAI}
+                    className="btn-ios-secondary"
+                    disabled={testingVisionAI || !testAccountId}
+                  >
+                    {testingVisionAI ? '测试中...' : '测试视觉模型连接'}
+                  </button>
                 </div>
                 <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-3 text-xs text-slate-500 dark:text-slate-400">
                   <p className="font-medium mb-1">优先级说明:</p>

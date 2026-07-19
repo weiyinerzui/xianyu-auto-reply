@@ -93,6 +93,42 @@ export const testAIConnection = async (
   }
 }
 
+// 测试视觉模型连接 - 需要指定 cookie_id
+export const testVisionAIConnection = async (
+  cookieId?: string,
+  settings?: { vision_api_key?: string; vision_base_url?: string; vision_model_name?: string }
+): Promise<ApiResponse> => {
+  if (!cookieId) {
+    return { success: false, message: '请先选择一个账号进行测试' }
+  }
+  try {
+    const requestBody: Record<string, unknown> = {
+      message: '请描述这张图片的内容',
+    }
+
+    if (settings && settings.vision_api_key && settings.vision_base_url && settings.vision_model_name) {
+      requestBody.vision_test_settings = {
+        vision_api_key: settings.vision_api_key,
+        vision_base_url: settings.vision_base_url,
+        vision_model_name: settings.vision_model_name,
+      }
+    }
+
+    const result = await post<{ success?: boolean; message?: string; reply?: string }>(
+      `/ai-reply-test/${cookieId}`,
+      requestBody
+    )
+    if (result.reply) {
+      return { success: true, message: `视觉模型回复: ${result.reply}` }
+    }
+    return { success: result.success ?? true, message: result.message || '视觉模型连接测试成功' }
+  } catch (error: unknown) {
+    const axiosError = error as { response?: { data?: { detail?: string; message?: string } } }
+    const detail = axiosError.response?.data?.detail || axiosError.response?.data?.message
+    return { success: false, message: detail || '视觉模型连接测试失败' }
+  }
+}
+
 // 获取邮件设置
 export const getEmailSettings = (): Promise<{ success: boolean; data?: Record<string, unknown> }> => {
   return get('/system-settings')

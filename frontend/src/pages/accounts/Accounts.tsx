@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Eye, EyeOff, AlertTriangle } from 'lucide-react'
 import { getAccountDetails, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, getAllAIReplySettings, getAIReplySettings, updateAIReplySettings, updateAccountLoginInfo, type AIReplySettings } from '@/api/accounts'
 import { getKeywords, getDefaultReply, updateDefaultReply } from '@/api/keywords'
-import { checkDefaultPassword } from '@/api/settings'
+import { checkDefaultPassword, testVisionAIConnection } from '@/api/settings'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -81,6 +81,7 @@ export function Accounts() {
   const [aiVisionApiKey, setAiVisionApiKey] = useState('')
   const [aiVisionBaseUrl, setAiVisionBaseUrl] = useState('')
   const [aiVisionModelName, setAiVisionModelName] = useState('')
+  const [testingVisionAI, setTestingVisionAI] = useState(false)
 
   const loadAccounts = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -1331,6 +1332,34 @@ export function Accounts() {
                           className="input-ios text-xs"
                           placeholder="例如: google/gemini-3.5-flash"
                         />
+                      </div>
+                      <div className="pt-1">
+                        <button
+                          onClick={async () => {
+                            if (!aiSettingsAccount) return
+                            setTestingVisionAI(true)
+                            try {
+                              const result = await testVisionAIConnection(aiSettingsAccount.id, {
+                                vision_api_key: aiVisionApiKey,
+                                vision_base_url: aiVisionBaseUrl,
+                                vision_model_name: aiVisionModelName,
+                              })
+                              if (result.success) {
+                                addToast({ type: 'success', message: result.message || '视觉模型连接测试成功' })
+                              } else {
+                                addToast({ type: 'error', message: result.message || '视觉模型连接测试失败' })
+                              }
+                            } catch {
+                              addToast({ type: 'error', message: '视觉模型连接测试失败' })
+                            } finally {
+                              setTestingVisionAI(false)
+                            }
+                          }}
+                          className="btn-ios-secondary w-full text-xs"
+                          disabled={testingVisionAI || !aiVisionApiKey || !aiVisionBaseUrl || !aiVisionModelName}
+                        >
+                          {testingVisionAI ? '测试中...' : '测试视觉模型连接'}
+                        </button>
                       </div>
                     </div>
                   </div>
