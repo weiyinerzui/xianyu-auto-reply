@@ -287,13 +287,15 @@ class AIReplyEngine:
         import os
         try:
             if image_urls:
-                # ===== 有图片：切换到 qnaigc 视觉模型 =====
-                qnaigc_api_key = os.getenv("QNAIGC_API_KEY", "")
-                qnaigc_base_url = os.getenv("QNAIGC_BASE_URL", "https://api.qnaigc.com/v1")
-                qnaigc_model = os.getenv("QNAIGC_VISION_MODEL", "google/gemini-3.5-flash")
+                # ===== 有图片：切换到视觉模型 =====
+                # 优先使用 settings 中的账号级视觉模型配置
+                vision_settings = settings or {}
+                vision_api_key = vision_settings.get('vision_api_key') or os.getenv("QNAIGC_API_KEY", "")
+                vision_base_url = vision_settings.get('vision_base_url') or os.getenv("QNAIGC_BASE_URL", "https://api.qnaigc.com/v1")
+                vision_model = vision_settings.get('vision_model_name') or os.getenv("QNAIGC_VISION_MODEL", "google/gemini-3.5-flash")
 
-                if not qnaigc_api_key:
-                    logger.warning("有图片但未配置 QNAIGC_API_KEY 环境变量，降级到文本模型（不传图片）")
+                if not vision_api_key:
+                    logger.warning("有图片但未配置视觉模型 API Key，降级到文本模型（不传图片）")
                     # 降级：用原配置的文本模型，不传图片
                     logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
                     response = client.chat.completions.create(
@@ -315,11 +317,11 @@ class AIReplyEngine:
                     else:
                         multimodal_messages.append(msg)
 
-                # 临时创建 qnaigc client，用视觉模型
-                vision_client = OpenAI(api_key=qnaigc_api_key, base_url=qnaigc_base_url)
-                logger.info(f"调用视觉模型: model={qnaigc_model}, base_url={qnaigc_base_url}, image_count={len(image_urls)}")
+                # 创建 vision client，用视觉模型配置
+                vision_client = OpenAI(api_key=vision_api_key, base_url=vision_base_url)
+                logger.info(f"调用视觉模型: model={vision_model}, base_url={vision_base_url}, image_count={len(image_urls)}")
                 response = vision_client.chat.completions.create(
-                    model=qnaigc_model,
+                    model=vision_model,
                     messages=multimodal_messages,
                     max_tokens=max_tokens,
                     temperature=temperature,

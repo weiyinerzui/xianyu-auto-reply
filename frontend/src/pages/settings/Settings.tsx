@@ -36,6 +36,8 @@ export function Settings() {
   const [showSmtpPassword, setShowSmtpPassword] = useState(false)
   // API Key 显示状态
   const [showApiKey, setShowApiKey] = useState(false)
+  // 视觉 API Key 显示状态
+  const [showVisionApiKey, setShowVisionApiKey] = useState(false)
   // 密码修改显示状态
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
@@ -431,6 +433,81 @@ export function Settings() {
                     <li>阿里云通义千问: https://dashscope.aliyuncs.com/compatible-mode/v1</li>
                     <li>OpenAI: https://api.openai.com/v1</li>
                     <li>国内中转: 使用服务商提供的 API 地址</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* Vision Model Settings */}
+            <div className="vben-card">
+              <div className="vben-card-header">
+                <h2 className="vben-card-title">
+                  <Bot className="w-4 h-4" />
+                  视觉模型设置
+                </h2>
+              </div>
+              <div className="vben-card-body space-y-4">
+                <div className="input-group">
+                  <label className="input-label">视觉 API 地址</label>
+                  <input
+                    type="text"
+                    value={settings?.ai_vision_api_url || 'https://api.qnaigc.com/v1'}
+                    onChange={(e) => setSettings(s => s ? { ...s, ai_vision_api_url: e.target.value } : null)}
+                    className="input-ios"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">处理图片消息时使用的 API 地址，支持 OpenAI 兼容格式</p>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">视觉 API Key</label>
+                  <div className="relative">
+                    <input
+                      type={showVisionApiKey ? 'text' : 'password'}
+                      value={settings?.ai_vision_api_key || ''}
+                      onChange={(e) => setSettings(s => s ? { ...s, ai_vision_api_key: e.target.value } : null)}
+                      placeholder="sk-..."
+                      className="input-ios w-full pr-20"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowVisionApiKey(!showVisionApiKey)}
+                        className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                        title={showVisionApiKey ? '隐藏' : '显示'}
+                      >
+                        {showVisionApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (settings?.ai_vision_api_key) {
+                            navigator.clipboard.writeText(settings.ai_vision_api_key)
+                            addToast({ type: 'success', message: '已复制到剪贴板' })
+                          }
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                        title="复制"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="input-group">
+                  <label className="input-label">视觉模型</label>
+                  <input
+                    type="text"
+                    value={settings?.ai_vision_model || 'google/gemini-3.5-flash'}
+                    onChange={(e) => setSettings(s => s ? { ...s, ai_vision_model: e.target.value } : null)}
+                    className="input-ios"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">如: google/gemini-3.5-flash、gpt-4o、qwen-vl-plus</p>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-3 text-xs text-slate-500 dark:text-slate-400">
+                  <p className="font-medium mb-1">优先级说明:</p>
+                  <ul className="space-y-0.5 list-disc list-inside">
+                    <li>账号级视觉模型设置（每个账号可单独配置）</li>
+                    <li>系统级视觉模型设置（此处配置）</li>
+                    <li>环境变量 QNAIGC_*（最低优先级）</li>
                   </ul>
                 </div>
               </div>

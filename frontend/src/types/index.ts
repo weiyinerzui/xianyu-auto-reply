@@ -183,6 +183,9 @@ export interface SystemSettings {
   ai_api_key?: string
   ai_api_url?: string
   ai_base_url?: string
+  ai_vision_model?: string
+  ai_vision_api_key?: string
+  ai_vision_api_url?: string
   default_reply?: string
   registration_enabled?: boolean
   show_default_login_info?: boolean

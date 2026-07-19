@@ -4654,6 +4654,9 @@ class AIReplySettings(BaseModel):
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    vision_model_name: Optional[str] = None
+    vision_api_key: Optional[str] = None
+    vision_base_url: Optional[str] = None
     max_discount_percent: Optional[int] = None
     max_discount_amount: Optional[int] = None
     max_bargain_rounds: Optional[int] = None

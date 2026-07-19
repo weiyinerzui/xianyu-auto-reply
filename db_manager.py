@@ -167,6 +167,9 @@ class DBManager:
                 model_name TEXT DEFAULT 'qwen-plus',
                 api_key TEXT,
                 base_url TEXT DEFAULT 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                vision_model_name TEXT,
+                vision_api_key TEXT,
+                vision_base_url TEXT,
                 max_discount_percent INTEGER DEFAULT 10,
                 max_discount_amount INTEGER DEFAULT 100,
                 max_bargain_rounds INTEGER DEFAULT 3,
@@ -1989,6 +1992,15 @@ class DBManager:
                     if 'base_url' in settings:
                         update_parts.append('base_url = ?')
                         values.append(settings['base_url'].strip() if settings['base_url'] else None)
+                    if 'vision_model_name' in settings:
+                        update_parts.append('vision_model_name = ?')
+                        values.append(settings['vision_model_name'].strip() if settings['vision_model_name'] else None)
+                    if 'vision_api_key' in settings:
+                        update_parts.append('vision_api_key = ?')
+                        values.append(settings['vision_api_key'].strip() if settings['vision_api_key'] else None)
+                    if 'vision_base_url' in settings:
+                        update_parts.append('vision_base_url = ?')
+                        values.append(settings['vision_base_url'].strip() if settings['vision_base_url'] else None)
                     
                     if not update_parts:
                         logger.debug(f"AI回复设置没有变更: {cookie_id}")
@@ -2003,16 +2015,19 @@ class DBManager:
                     # 记录不存在，插入新记录
                     cursor.execute('''
                     INSERT INTO ai_reply_settings
-                    (cookie_id, ai_enabled, model_name, api_key, base_url,
+                    (cookie_id, ai_enabled, model_name, api_key, base_url, vision_model_name, vision_api_key, vision_base_url,
                      max_discount_percent, max_discount_amount, max_bargain_rounds,
                      custom_prompts, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ''', (
                         cookie_id,
                         settings.get('ai_enabled', False),
                         settings.get('model_name').strip() if settings.get('model_name') else None,
                         settings.get('api_key').strip() if settings.get('api_key') else None,
                         settings.get('base_url').strip() if settings.get('base_url') else None,
+                        settings.get('vision_model_name').strip() if settings.get('vision_model_name') else None,
+                        settings.get('vision_api_key').strip() if settings.get('vision_api_key') else None,
+                        settings.get('vision_base_url').strip() if settings.get('vision_base_url') else None,
                         settings.get('max_discount_percent', 10),
                         settings.get('max_discount_amount', 100),
                         settings.get('max_bargain_rounds', 3),
@@ -2041,7 +2056,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT ai_enabled, model_name, api_key, base_url,
+                SELECT ai_enabled, model_name, api_key, base_url, vision_model_name, vision_api_key, vision_base_url,
                        max_discount_percent, max_discount_amount, max_bargain_rounds,
                        custom_prompts
                 FROM ai_reply_settings WHERE cookie_id = ?
@@ -2054,6 +2069,11 @@ class DBManager:
                 system_base_url = self.get_system_setting('ai_api_url') or DEFAULT_BASE_URL
                 system_model = self.get_system_setting('ai_model') or DEFAULT_MODEL
                 
+                # 获取系统级别的视觉模型设置作为默认值
+                system_vision_api_key = self.get_system_setting('ai_vision_api_key') or ''
+                system_vision_base_url = self.get_system_setting('ai_vision_api_url') or os.getenv('QNAIGC_BASE_URL', 'https://api.qnaigc.com/v1')
+                system_vision_model = self.get_system_setting('ai_vision_model') or os.getenv('QNAIGC_VISION_MODEL', 'google/gemini-3.5-flash')
+                
                 if result:
                     # 账号有设置，但如果api_key/base_url/model_name为空或等于默认值，使用系统设置
                     account_model = result[1]
@@ -2065,15 +2085,26 @@ class DBManager:
                     use_api_key = account_api_key if account_api_key else system_api_key
                     use_base_url = account_base_url if (account_base_url and account_base_url != DEFAULT_BASE_URL) else system_base_url
                     
+                    # 视觉模型：账号级 > 系统级 > 环境变量
+                    account_vision_model = result[4]
+                    account_vision_api_key = result[5]
+                    account_vision_base_url = result[6]
+                    use_vision_model = account_vision_model if account_vision_model else system_vision_model
+                    use_vision_api_key = account_vision_api_key if account_vision_api_key else system_vision_api_key
+                    use_vision_base_url = account_vision_base_url if account_vision_base_url else system_vision_base_url
+                    
                     return {
                         'ai_enabled': bool(result[0]),
                         'model_name': use_model,
                         'api_key': use_api_key,
                         'base_url': use_base_url,
-                        'max_discount_percent': result[4],
-                        'max_discount_amount': result[5],
-                        'max_bargain_rounds': result[6],
-                        'custom_prompts': result[7]
+                        'vision_model_name': use_vision_model,
+                        'vision_api_key': use_vision_api_key,
+                        'vision_base_url': use_vision_base_url,
+                        'max_discount_percent': result[7],
+                        'max_discount_amount': result[8],
+                        'max_bargain_rounds': result[9],
+                        'custom_prompts': result[10]
                     }
                 else:
                     # 账号没有设置，使用系统设置作为默认值
@@ -2082,6 +2113,9 @@ class DBManager:
                         'model_name': system_model,
                         'api_key': system_api_key,
                         'base_url': system_base_url,
+                        'vision_model_name': system_vision_model,
+                        'vision_api_key': system_vision_api_key,
+                        'vision_base_url': system_vision_base_url,
                         'max_discount_percent': 10,
                         'max_discount_amount': 100,
                         'max_bargain_rounds': 3,
@@ -2094,6 +2128,9 @@ class DBManager:
                     'model_name': 'qwen-plus',
                     'api_key': '',
                     'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                    'vision_model_name': os.getenv('QNAIGC_VISION_MODEL', 'google/gemini-3.5-flash'),
+                    'vision_api_key': '',
+                    'vision_base_url': os.getenv('QNAIGC_BASE_URL', 'https://api.qnaigc.com/v1'),
                     'max_discount_percent': 10,
                     'max_discount_amount': 100,
                     'max_bargain_rounds': 3,

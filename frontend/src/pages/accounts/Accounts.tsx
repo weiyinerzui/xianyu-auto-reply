@@ -77,6 +77,10 @@ export function Accounts() {
   const [aiApiKey, setAiApiKey] = useState('')
   const [aiBaseUrl, setAiBaseUrl] = useState('')
   const [aiModelName, setAiModelName] = useState('')
+  // 视觉模型 API 配置（账号级别）
+  const [aiVisionApiKey, setAiVisionApiKey] = useState('')
+  const [aiVisionBaseUrl, setAiVisionBaseUrl] = useState('')
+  const [aiVisionModelName, setAiVisionModelName] = useState('')
 
   const loadAccounts = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -526,6 +530,10 @@ export function Accounts() {
       setAiApiKey(settings.api_key ?? '')
       setAiBaseUrl(settings.base_url ?? '')
       setAiModelName(settings.model_name ?? '')
+      // 加载账号级别的视觉模型配置
+      setAiVisionApiKey(settings.vision_api_key ?? '')
+      setAiVisionBaseUrl(settings.vision_base_url ?? '')
+      setAiVisionModelName(settings.vision_model_name ?? '')
     } catch {
       addToast({ type: 'error', message: '加载AI设置失败' })
     } finally {
@@ -548,6 +556,10 @@ export function Accounts() {
         api_key: aiApiKey || undefined,
         base_url: aiBaseUrl || undefined,
         model_name: aiModelName || undefined,
+        // 账号级别的视觉模型配置（留空则使用系统设置）
+        vision_api_key: aiVisionApiKey || undefined,
+        vision_base_url: aiVisionBaseUrl || undefined,
+        vision_model_name: aiVisionModelName || undefined,
       })
       // 更新本地状态
       setAccounts(prev => prev.map(a =>
@@ -1281,6 +1293,43 @@ export function Accounts() {
                           onChange={(e) => setAiModelName(e.target.value)}
                           className="input-ios text-xs"
                           placeholder="例如: doubao-1-5-pro-256k-250115"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 视觉模型 API配置 */}
+                  <div className="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">
+                    <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">视觉模型配置（可选，留空使用系统设置）</h3>
+                    <div className="space-y-3">
+                      <div className="input-group">
+                        <label className="input-label text-xs">视觉 API Base URL</label>
+                        <input
+                          type="text"
+                          value={aiVisionBaseUrl}
+                          onChange={(e) => setAiVisionBaseUrl(e.target.value)}
+                          className="input-ios font-mono text-xs"
+                          placeholder="例如: https://api.qnaigc.com/v1"
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label text-xs">视觉 API Key</label>
+                        <input
+                          type="password"
+                          value={aiVisionApiKey}
+                          onChange={(e) => setAiVisionApiKey(e.target.value)}
+                          className="input-ios font-mono text-xs"
+                          placeholder="留空使用系统设置"
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label text-xs">视觉模型名称</label>
+                        <input
+                          type="text"
+                          value={aiVisionModelName}
+                          onChange={(e) => setAiVisionModelName(e.target.value)}
+                          className="input-ios text-xs"
+                          placeholder="例如: google/gemini-3.5-flash"
                         />
                       </div>
                     </div>

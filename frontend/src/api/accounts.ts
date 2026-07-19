@@ -155,6 +155,10 @@ export interface AIReplySettings {
   max_discount_amount?: number
   max_bargain_rounds?: number
   custom_prompts?: string
+  // 视觉模型配置（账号级）
+  vision_model_name?: string
+  vision_api_key?: string
+  vision_base_url?: string
   // 兼容旧字段（前端内部使用）
   enabled?: boolean
 }
@@ -184,6 +188,16 @@ export const updateAIReplySettings = (cookieId: string, settings: Partial<AIRepl
   }
   if (settings.base_url !== undefined) {
     payload.base_url = settings.base_url
+  }
+  // 视觉模型配置
+  if (settings.vision_model_name !== undefined) {
+    payload.vision_model_name = settings.vision_model_name
+  }
+  if (settings.vision_api_key !== undefined) {
+    payload.vision_api_key = settings.vision_api_key
+  }
+  if (settings.vision_base_url !== undefined) {
+    payload.vision_base_url = settings.vision_base_url
   }
 
   return put(`/ai-reply-settings/${cookieId}`, payload)
