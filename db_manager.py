@@ -180,6 +180,20 @@ class DBManager:
             )
             ''')
 
+            # 迁移：为 ai_reply_settings 表添加视觉模型字段（如果缺失）
+            try:
+                cursor.execute("PRAGMA table_info(ai_reply_settings)")
+                existing_columns = {row[1] for row in cursor.fetchall()}
+                if 'vision_model_name' not in existing_columns:
+                    cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN vision_model_name TEXT")
+                if 'vision_api_key' not in existing_columns:
+                    cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN vision_api_key TEXT")
+                if 'vision_base_url' not in existing_columns:
+                    cursor.execute("ALTER TABLE ai_reply_settings ADD COLUMN vision_base_url TEXT")
+                conn.commit()
+            except Exception as migration_e:
+                logger.warning(f"ai_reply_settings 视觉模型字段迁移失败（可能已存在）: {migration_e}")
+
             # 创建AI对话历史表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_conversations (
