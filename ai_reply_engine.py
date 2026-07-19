@@ -478,7 +478,19 @@ class AIReplyEngine:
                         return refuse_reply
 
                 # 6. 构建提示词
-                custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
+                custom_prompts = {}
+                if settings['custom_prompts']:
+                    try:
+                        parsed = json.loads(settings['custom_prompts'])
+                        if isinstance(parsed, dict):
+                            custom_prompts = parsed
+                        else:
+                            # 非JSON对象（如纯文本字符串），当作 default 意图提示词
+                            custom_prompts = {'default': str(parsed)}
+                    except (json.JSONDecodeError, TypeError):
+                        # 非JSON格式（用户直接填了纯文本），当作 default 意图提示词
+                        logger.info(f"custom_prompts 非JSON格式，当作默认提示词使用: {settings['custom_prompts'][:50]}...")
+                        custom_prompts = {'default': settings['custom_prompts'].strip()}
                 system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
 
                 # 7. 构建商品信息
