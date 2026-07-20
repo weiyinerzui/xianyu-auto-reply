@@ -301,7 +301,7 @@ class AIReplyEngine:
                     response = client.chat.completions.create(
                         model=settings['model_name'],
                         messages=messages,
-                        max_tokens=max_tokens,
+                        max_tokens=100,  # 降级到文本模型，100足够
                         temperature=temperature
                     )
                     return response.choices[0].message.content.strip()
@@ -323,7 +323,7 @@ class AIReplyEngine:
                 response = vision_client.chat.completions.create(
                     model=vision_model,
                     messages=multimodal_messages,
-                    max_tokens=1500,  # 视觉模型需要更多token（Thinking模型有大量隐藏推理token，100会被截断）
+                    max_tokens=max_tokens,  # 视觉模型：调用方传入1500（Thinking模型需要更多token）
                     temperature=temperature,
                     timeout=25  # 视觉模型需要更长超时
                 )
@@ -623,7 +623,9 @@ class AIReplyEngine:
                     if not client:
                         return None
                     logger.info(f"messages:{messages}")
-                    reply = self._call_openai_api(client, settings, messages, max_tokens=100, temperature=0.7, image_urls=image_urls)
+                    # 视觉模型需要更多max_tokens（Thinking模型有大量隐藏推理token，100会被截断为0-2字输出）
+                    effective_max_tokens = 1500 if image_urls else 100
+                    reply = self._call_openai_api(client, settings, messages, max_tokens=effective_max_tokens, temperature=0.7, image_urls=image_urls)
 
                 # 11. 保存AI回复到对话记录
                 self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
