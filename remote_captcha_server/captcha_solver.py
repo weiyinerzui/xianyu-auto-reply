@@ -164,37 +164,57 @@ def _get_cookies_via_ws(ws_url: str) -> Optional[Dict[str, str]]:
     try:
         import websocket
         ws = websocket.create_connection(ws_url, timeout=10)
+        ws.settimeout(5)  # 设置 recv 超时
         
         # 发送 Network.enable
         ws.send(json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
-        ws.recv(timeout=5)  # 接收响应
+        ws.recv()  # 接收响应
         
         # 发送 Network.getAllCookies
         ws.send(json.dumps({"id": 2, "method": "Network.getAllCookies", "params": {}}))
-        result = json.loads(ws.recv(timeout=5))
+        result = json.loads(ws.recv())
         
         ws.close()
         
         cookies_list = result.get('result', {}).get('cookies', [])
         print(f"  CDP: 获取到 {len(cookies_list)} 个 cookies")
         
-        # 筛选 goofish.com / taobao.com 的 cookies
+        # 打印所有 cookie 域名，方便调试
+        all_domains = set()
+        for c in cookies_list:
+            all_domains.add(c.get('domain', '?'))
+        print(f"  CDP: 所有域名: {sorted(all_domains)}")
+        
+        # 筛选阿里系域名的 cookies（x5sec 可能在非 goofish/taobao 域名下）
+        ali_domains = ['goofish', 'taobao', 'alibaba', 'alicdn', '1688', 'alipay',
+                       'tmall', 'alidetail', 'mgoofish', 'hymgoofish']
         filtered = {}
         for c in cookies_list:
             domain = c.get('domain', '')
-            if 'goofish' in domain or 'taobao' in domain:
-                name = c.get('name', '')
-                value = c.get('value', '')
-                if name and value:
-                    filtered[name] = value
+            name = c.get('name', '')
+            value = c.get('value', '')
+            if not name or not value:
+                continue
+            # 阿里系域名 或 名字含 x5 的都保留
+            if any(d in domain for d in ali_domains) or 'x5' in name.lower():
+                filtered[name] = value
         
-        print(f"  CDP: 过滤后 {len(filtered)} 个闲鱼相关 cookies")
+        print(f"  CDP: 过滤后 {len(filtered)} 个阿里系 cookies")
         
         # 检查是否包含 x5 相关
         x5_count = sum(1 for k in filtered if k.lower().startswith('x5') or 'x5sec' in k.lower())
         print(f"  CDP: 其中 {x5_count} 个 x5 相关 cookies")
         
-        return filtered if filtered else {"__captcha_passed__": "true"}
+        # 没有真实 cookies 就返回通过信号
+        if not filtered:
+            return {"__captcha_passed__": "true"}
+        
+        # 有 cookies 但没 x5 → 追加通过信号，让 Docker 端走 refresh_token
+        if x5_count == 0:
+            filtered["__captcha_passed__"] = "true"
+            print(f"  CDP: 无x5 cookies，追加__captcha_passed__信号")
+        
+        return filtered
         
     except ImportError:
         print("  websocket-client 未安装，返回验证通过信号")
@@ -240,6 +260,7 @@ def solve_slider_captcha(
         "--no-default-browser-check",
         "--disable-background-timer-throttling",
         f"--remote-debugging-port={DEBUG_PORT}",
+        "--remote-allow-origins=*",
         f"--app={captcha_url}",
         "--window-size=800,600",
         f"--user-data-dir={user_data_dir}",
@@ -257,20 +278,30 @@ def solve_slider_captcha(
         # ====== 核心步骤：用 pyautogui 拖动滑块 ======
         success = _drag_slider_with_pyautogui(account_id, timeout)
 
-        # 等待验证结果生效
-        time.sleep(random.uniform(1, 2))
+        # 等待验证结果生效，cookies 写入需要时间
+        time.sleep(random.uniform(2, 3))
 
-        # ====== 提取 cookies ======
+        # ====== 提取 cookies（带重试） ======
         cookies = None
         if success:
             print(f"[{account_id}] 验证通过，尝试提取cookies...")
-            cookies = _extract_cookies_via_cdp()
+            for attempt in range(3):
+                cookies = _extract_cookies_via_cdp()
+                has_x5 = cookies and any(
+                    k.lower().startswith('x5') or 'x5sec' in k.lower()
+                    for k in (cookies or {})
+                )
+                if has_x5:
+                    x5_count = sum(1 for k in (cookies or {}) if k.lower().startswith('x5') or 'x5sec' in k.lower())
+                    print(f"[{account_id}] 第{attempt+1}次提取成功，{len(cookies or {})}个cookies（含{x5_count}个x5）")
+                    break
+                elif attempt < 2:
+                    wait = 1.5 * (attempt + 1)
+                    print(f"[{account_id}] 第{attempt+1}次提取无x5，{wait:.1f}s后重试...")
+                    time.sleep(wait)
+            
             if cookies and cookies.get("__captcha_passed__"):
-                # 没拿到真实cookies但有通过信号
-                print(f"[{account_id}] 未能提取真实cookies，返回验证通过信号")
-            elif cookies:
-                x5_count = sum(1 for k in cookies if k.lower().startswith('x5') or 'x5sec' in k.lower())
-                print(f"[{account_id}] 成功提取 {len(cookies)} 个cookies（含{x5_count}个x5）")
+                print(f"[{account_id}] 最终未提取到x5 cookies，返回验证通过信号+已有cookies")
             
         if success:
             return True, cookies or {"__captcha_passed__": "true"}, "验证成功"
