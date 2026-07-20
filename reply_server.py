@@ -1479,7 +1479,10 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'enabled': cookie_enabled,
             'auto_confirm': auto_confirm,
             'remark': remark,
-            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10
+            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10,
+            'username': cookie_details.get('username', '') if cookie_details else '',
+            'login_password': '••••••••' if (cookie_details and cookie_details.get('password')) else '',
+            'show_browser': bool(cookie_details.get('show_browser', False)) if cookie_details else False,
         })
     return result
 
@@ -6612,3 +6615,90 @@ async def catch_all_route(path: str):
 # 移除自动启动，由Start.py或手动启动
 # if __name__ == "__main__":
 #     uvicorn.run(app, host="0.0.0.0", port=8080)
+# ==================== 远程过滑块配置 API ====================
+
+@app.get("/api/remote-captcha/config")
+def get_remote_captcha_config(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取远程过滑块服务配置"""
+    from db_manager import db_manager
+    enabled = db_manager.get_system_setting("remote_captcha_enabled") or "false"
+    url = db_manager.get_system_setting("remote_captcha_url") or ""
+    timeout = db_manager.get_system_setting("remote_captcha_timeout") or "60"
+    # 密钥只返回前4位
+    secret = db_manager.get_system_setting("remote_captcha_secret") or ""
+    masked_secret = secret[:4] + "****" if len(secret) > 4 else "****" if secret else ""
+    return {
+        "enabled": str(enabled).lower() in ("true", "1", "yes"),
+        "url": url,
+        "secret": masked_secret,
+        "has_secret": bool(secret),
+        "timeout": int(timeout) if timeout.isdigit() else 60,
+    }
+
+
+@app.post("/api/remote-captcha/config")
+def save_remote_captcha_config(
+    enabled: bool = None,
+    url: str = None,
+    secret: str = None,
+    timeout: int = None,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """保存远程过滑块服务配置"""
+    from db_manager import db_manager
+    saved = []
+    if enabled is not None:
+        db_manager.set_system_setting("remote_captcha_enabled", str(enabled).lower(), "是否启用远程过滑块")
+        saved.append("enabled")
+    if url is not None:
+        db_manager.set_system_setting("remote_captcha_url", url.strip(), "远程过滑块服务URL")
+        saved.append("url")
+    if secret is not None and secret and not secret.endswith("****"):
+        db_manager.set_system_setting("remote_captcha_secret", secret.strip(), "远程过滑块服务密钥")
+        saved.append("secret")
+    if timeout is not None:
+        db_manager.set_system_setting("remote_captcha_timeout", str(timeout), "远程过滑块超时秒数")
+        saved.append("timeout")
+    return {"success": True, "saved": saved}
+
+
+@app.post("/api/remote-captcha/test")
+def test_remote_captcha_connection(
+    url: str = None,
+    secret: str = None,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """测试远程过滑块服务连通性"""
+    import requests as req
+    from db_manager import db_manager
+
+    test_url = url
+    if not test_url:
+        test_url = db_manager.get_system_setting("remote_captcha_url") or ""
+    if not test_url:
+        return {"success": False, "message": "未配置远程服务URL"}
+
+    # 测试 health 接口
+    health_url = test_url.rstrip("/")
+    if health_url.endswith("/solve"):
+        health_url = health_url[:-6]  # 去掉 /solve
+    health_url += "/health"
+
+    try:
+        resp = req.get(health_url, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "success": True,
+                "message": f"连接成功: {data.get('service', 'unknown')} v{data.get('version', '?')}",
+                "details": data,
+            }
+        else:
+            return {"success": False, "message": f"服务返回 HTTP {resp.status_code}"}
+    except req.exceptions.ConnectionError:
+        return {"success": False, "message": "连接失败，请检查URL和防火墙"}
+    except req.exceptions.Timeout:
+        return {"success": False, "message": "连接超时，请检查网络"}
+    except Exception as e:
+        return {"success": False, "message": f"测试失败: {e}"}
+

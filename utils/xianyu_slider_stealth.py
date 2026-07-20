@@ -279,6 +279,10 @@ class XianyuSliderStealth:
     def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True):
         self.user_id = user_id
         self.enable_learning = enable_learning
+        
+        # 提取纯用户ID（移除时间戳部分）——必须在 self.headless 赋值之前，因为 headless 判断日志中会用到
+        self.pure_user_id = concurrency_manager._extract_pure_user_id(user_id)
+        
         self.headless = headless  # 是否使用无头模式
         # 如果有 DISPLAY 环境变量（Xvfb 已启动），自动切换为有头模式以规避 headless 指纹检测
         if not self.headless:
@@ -290,9 +294,6 @@ class XianyuSliderStealth:
         self.page = None
         self.context = None
         self.playwright = None
-        
-        # 提取纯用户ID（移除时间戳部分）
-        self.pure_user_id = concurrency_manager._extract_pure_user_id(user_id)
         
         # 检查日期限制
         if not self._check_date_validity():

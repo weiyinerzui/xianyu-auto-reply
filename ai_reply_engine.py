@@ -323,7 +323,7 @@ class AIReplyEngine:
                 response = vision_client.chat.completions.create(
                     model=vision_model,
                     messages=multimodal_messages,
-                    max_tokens=max_tokens,
+                    max_tokens=1500,  # 视觉模型需要更多token（Thinking模型有大量隐藏推理token，100会被截断）
                     temperature=temperature,
                     timeout=25  # 视觉模型需要更长超时
                 )
@@ -479,19 +479,22 @@ class AIReplyEngine:
 
                 # 6. 构建提示词
                 custom_prompts = {}
+                custom_prompts_extra = ''
                 if settings['custom_prompts']:
                     try:
                         parsed = json.loads(settings['custom_prompts'])
                         if isinstance(parsed, dict):
                             custom_prompts = parsed
                         else:
-                            # 非JSON对象（如纯文本字符串），当作 default 意图提示词
-                            custom_prompts = {'default': str(parsed)}
+                            # 非JSON对象（如纯文本字符串），作为额外要求追加到默认提示词末尾
+                            custom_prompts_extra = str(parsed).strip()
                     except (json.JSONDecodeError, TypeError):
-                        # 非JSON格式（用户直接填了纯文本），当作 default 意图提示词
-                        logger.info(f"custom_prompts 非JSON格式，当作默认提示词使用: {settings['custom_prompts'][:50]}...")
-                        custom_prompts = {'default': settings['custom_prompts'].strip()}
+                        # 非JSON格式（用户直接填了纯文本），作为额外要求追加到默认提示词末尾
+                        logger.info(f"custom_prompts 非JSON格式，作为额外要求追加: {settings['custom_prompts'][:50]}...")
+                        custom_prompts_extra = settings['custom_prompts'].strip()
                 system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
+                if custom_prompts_extra:
+                    system_prompt += f'\n\n【额外要求】\n{custom_prompts_extra}'
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"

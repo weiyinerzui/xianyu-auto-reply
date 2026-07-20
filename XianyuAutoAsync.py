@@ -1735,7 +1735,6 @@ class XianyuLive:
                                 processing_status='processing'
                             )
                             if success:
-                                # 获取刚插入的记录ID（简单方式，实际应该返回ID）
                                 logs = db_manager.get_risk_control_logs(cookie_id=self.cookie_id, limit=1)
                                 if logs:
                                     log_id = logs[0].get('id')
@@ -1744,13 +1743,70 @@ class XianyuLive:
                             logger.error(f"【{self.cookie_id}】记录风控日志失败: {log_e}")
 
                         try:
-                            # 尝试通过滑块验证获取新的cookies
                             captcha_start_time = time.time()
-                            new_cookies_str = await self._handle_captcha_verification(res_json)
+                            new_cookies_str = None
+                            captcha_method = None
+
+                            # ====== 策略1：远程过滑块（Windows + 真实鼠标，最优先） ======
+                            try:
+                                from utils.remote_captcha_solver import RemoteCaptchaSolver
+                                remote_solver = RemoteCaptchaSolver.from_config()
+                                if remote_solver and verification_url and verification_url != 'Token刷新时检测':
+                                    logger.info(f"【{self.cookie_id}】尝试远程过滑块服务...")
+                                    import asyncio
+                                    status, remote_cookies, msg = await asyncio.to_thread(
+                                        remote_solver.solve,
+                                        self.cookie_id,
+                                        verification_url,
+                                        self.cookies_str,
+                                    )
+
+                                    if status == "ok" and remote_cookies:
+                                        updated_cookies = self.cookies.copy()
+                                        new_cookie_count = 0
+                                        updated_cookie_count = 0
+                                        for k, v in remote_cookies.items():
+                                            if k.lower().startswith('x5') or 'x5sec' in k.lower():
+                                                if k in updated_cookies:
+                                                    if updated_cookies[k] != v:
+                                                        updated_cookies[k] = v
+                                                        updated_cookie_count += 1
+                                                else:
+                                                    updated_cookies[k] = v
+                                                    new_cookie_count += 1
+
+                                        cookies_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items()])
+                                        if new_cookie_count > 0 or updated_cookie_count > 0:
+                                            new_cookies_str = cookies_str
+                                            captcha_method = "remote_solver"
+                                            logger.info(
+                                                f"【{self.cookie_id}】远程过滑块成功: "
+                                                f"新增{new_cookie_count}个, 更新{updated_cookie_count}个x5"
+                                            )
+                                            # 更新实例的 cookies
+                                            self.cookies_str = cookies_str
+                                            self.cookies = updated_cookies
+                                            await self.update_config_cookies()
+                                    elif status == "url_expired":
+                                        logger.warning(f"【{self.cookie_id}】远程反馈链接过期，尝试刷新URL")
+                                    elif status == "fallback":
+                                        logger.info(f"【{self.cookie_id}】远程服务不可用，回退本机逻辑")
+                                    else:
+                                        logger.warning(f"【{self.cookie_id}】远程过滑块失败: {msg}")
+                            except Exception as remote_e:
+                                logger.warning(f"【{self.cookie_id}】远程过滑块异常: {self._safe_str(remote_e)}")
+
+                            # ====== 策略2：本机 Playwright 滑块验证（兜底） ======
+                            if not new_cookies_str:
+                                logger.info(f"【{self.cookie_id}】尝试本机Playwright滑块验证...")
+                                new_cookies_str = await self._handle_captcha_verification(res_json)
+                                if new_cookies_str:
+                                    captcha_method = "playwright"
+
                             captcha_duration = time.time() - captcha_start_time
 
                             if new_cookies_str:
-                                logger.info(f"【{self.cookie_id}】滑块验证成功，准备重启实例...")
+                                logger.info(f"【{self.cookie_id}】滑块验证成功（方法: {captcha_method}），准备重启实例...")
 
                                 # 更新风控日志为成功状态
                                 if 'log_id' in locals() and log_id:
@@ -1758,24 +1814,20 @@ class XianyuLive:
                                         from db_manager import db_manager
                                         db_manager.update_risk_control_log(
                                             log_id=log_id,
-                                            processing_result=f"滑块验证成功，耗时: {captcha_duration:.2f}秒, cookies长度: {len(new_cookies_str)}",
+                                            processing_result=f"滑块验证成功（{captcha_method}），耗时: {captcha_duration:.2f}秒, cookies长度: {len(new_cookies_str)}",
                                             processing_status='success'
                                         )
                                     except Exception as update_e:
                                         logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
 
-                                # 重启实例（cookies已在_handle_captcha_verification中更新到数据库）
-                                # await self._restart_instance()
-                                
                                 # 重新尝试刷新token（递归调用，但有深度限制）
                                 return await self.refresh_token(captcha_retry_count + 1)
                             else:
-                                logger.error(f"【{self.cookie_id}】滑块验证失败")
+                                logger.error(f"【{self.cookie_id}】滑块验证失败（所有策略均失败）")
 
                                 # 设置风控退避（slider_failed，指数退避）
                                 base_seconds = max(30, int(RISK_CONTROL.get('token_retry_min_wait_seconds', 180) or 180) // 2)
                                 XianyuLive.set_password_login_failure_backoff(self.cookie_id, "slider_failed", base_seconds)
-                                # 检查是否需要触发账号保护
                                 await self._protect_account_for_consecutive_failures()
 
                                 # 更新风控日志为失败状态
@@ -1784,18 +1836,16 @@ class XianyuLive:
                                         from db_manager import db_manager
                                         db_manager.update_risk_control_log(
                                             log_id=log_id,
-                                            processing_result=f"滑块验证失败，耗时: {captcha_duration:.2f}秒, 原因: 未获取到新cookies",
+                                            processing_result=f"滑块验证失败，耗时: {captcha_duration:.2f}秒, 原因: 所有策略均失败",
                                             processing_status='failed'
                                         )
                                     except Exception as update_e:
                                         logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
                                 
-                                # 标记已发送通知（通知已在_handle_captcha_verification中发送）
                                 notification_sent = True
                         except Exception as captcha_e:
                             logger.error(f"【{self.cookie_id}】滑块验证处理异常: {self._safe_str(captcha_e)}")
 
-                            # 更新风控日志为异常状态
                             captcha_duration = time.time() - captcha_start_time if 'captcha_start_time' in locals() else 0
                             if 'log_id' in locals() and log_id:
                                 try:
@@ -1809,7 +1859,6 @@ class XianyuLive:
                                 except Exception as update_e:
                                     logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
                             
-                            # 标记已发送通知（通知已在_handle_captcha_verification中发送）
                             notification_sent = True
 
                     # 检查是否包含"令牌过期"或"Session过期"
@@ -2382,7 +2431,7 @@ class XianyuLive:
             
             # 在单独的线程中运行同步的登录方法
             import asyncio
-            slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=not show_browser)
+            slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=bool(not os.getenv('DISPLAY')))
             result = await asyncio.to_thread(
                 slider.login_with_password_playwright,
                 account=username,
