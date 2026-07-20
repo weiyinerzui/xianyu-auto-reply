@@ -6,14 +6,16 @@
   Playwright/CDP 即使回放真人轨迹也被判 code=300（拒），
   而用 pyautogui 驱动物理光标回放真人轨迹则 code=0（通过）。
 
-  因此本模块使用 pyautogui 在真实 Chrome 浏览器上驱动物理鼠标，
+  本模块使用 pyautogui 在真实 Chrome 浏览器上驱动物理鼠标，
   完成滑块验证，绕过 CDP 检测。
 
-依赖：
-  pip install pyautogui requests selenium
+  验证通过后，通过 Chrome 的远程调试端口(CDP)提取 cookies，
+  返回给 Docker 端使用。
 
-  需要安装 Chrome 浏览器（不是 Chromium）
-  Chrome 安装后需要先手动登录一次闲鱼，保存登录态
+依赖：
+  pip install pyautogui requests
+
+  需要安装 Chrome 浏览器
 """
 from __future__ import annotations
 
@@ -31,16 +33,15 @@ import requests
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = False
 
-# 滑块相关常量
-SLIDER_SELECTOR = "nc_1_n1z"  # 阿里 NoCaptcha 滑块 ID 前缀
+# Chrome 远程调试端口
+DEBUG_PORT = 9222
 
-# 真人轨迹模板（从上游 human_trails 简化而来）
-# 格式: [(dx, dt_ms), ...] 表示每步的位移和间隔
+# 真人轨迹模板
 _HUMAN_TRAIL = [
     (2, 12), (3, 10), (5, 8), (8, 7), (12, 6), (15, 5),
     (18, 5), (20, 4), (22, 4), (20, 4), (18, 5), (15, 5),
     (12, 6), (10, 6), (8, 7), (5, 8), (3, 10), (2, 15),
-    (1, 20), (0, 50),  # 最后微调+等待
+    (1, 20), (0, 50),
 ]
 
 
@@ -58,15 +59,7 @@ def _get_chrome_path() -> str:
 
 
 def _generate_human_trail(total_distance: int = 300) -> list:
-    """
-    生成真人轨迹
-
-    Args:
-        total_distance: 需要滑动的总距离（像素）
-
-    Returns:
-        [(dx, dt_ms), ...] 位移-时间序列
-    """
+    """生成真人轨迹，返回 [(dx, jitter_y, dt_ms), ...]"""
     trail = []
     remaining = total_distance
 
@@ -77,14 +70,13 @@ def _generate_human_trail(total_distance: int = 300) -> list:
         actual_dx = min(actual_dx, remaining)
         if actual_dx <= 0:
             break
-        trail.append((actual_dx, int(dt * random.uniform(0.8, 1.2))))
+        trail.append((actual_dx, random.randint(-2, 2), int(dt * random.uniform(0.8, 1.2))))
         remaining -= actual_dx
 
     # 匀速阶段
     while remaining > 20:
         dx = random.randint(5, min(25, remaining))
-        dt = random.randint(4, 8)
-        trail.append((dx, dt))
+        trail.append((dx, random.randint(-2, 2), random.randint(4, 8)))
         remaining -= dx
 
     # 减速阶段
@@ -92,20 +84,124 @@ def _generate_human_trail(total_distance: int = 300) -> list:
         actual_dx = min(dx, remaining)
         if actual_dx <= 0:
             break
-        trail.append((actual_dx, int(dt * random.uniform(0.9, 1.3))))
+        trail.append((actual_dx, random.randint(-2, 2), int(dt * random.uniform(0.9, 1.3))))
         remaining -= actual_dx
 
     # 最后微调
     if remaining > 0:
-        trail.append((remaining, random.randint(15, 30)))
+        trail.append((remaining, random.randint(-1, 1), random.randint(15, 30)))
 
-    # 加入随机抖动
-    final_trail = []
-    for dx, dt in trail:
-        jitter_y = random.randint(-2, 2)
-        final_trail.append((dx, jitter_y, dt))
+    return trail
 
-    return final_trail
+
+def _extract_cookies_via_cdp(port: int = DEBUG_PORT, timeout: int = 10) -> Optional[Dict[str, str]]:
+    """
+    通过 Chrome DevTools Protocol 提取 goofish.com 的 cookies
+    
+    Chrome 启动时带 --remote-debugging-port=9222，我们可以通过 HTTP 接口获取 cookies
+    """
+    try:
+        # 1. 获取调试目标
+        resp = requests.get(f"http://localhost:{port}/json", timeout=5)
+        targets = resp.json()
+        
+        if not targets:
+            print(f"  CDP: 未找到浏览器目标")
+            return None
+        
+        # 找到 goofish 相关的页面
+        target_id = None
+        for t in targets:
+            url = t.get('url', '')
+            if 'goofish' in url or 'taobao' in url or 'punish' in url:
+                target_id = t.get('id')
+                print(f"  CDP: 找到目标页面: {url[:80]}")
+                break
+        
+        if not target_id:
+            # 用第一个目标
+            target_id = targets[0].get('id')
+            print(f"  CDP: 使用第一个目标")
+        
+        if not target_id:
+            return None
+        
+        # 2. 通过 CDP 获取 cookies
+        # 直接用 /json/protocol 不需要 WebSocket
+        # 更简单的方式：用 Network.getAllCookies
+        ws_url = None
+        for t in targets:
+            if t.get('id') == target_id:
+                ws_url = t.get('webSocketDebuggerUrl')
+                break
+        
+        if not ws_url:
+            # fallback: 用 HTTP 方式获取所有 cookies
+            return _get_cookies_simple(port)
+        
+        # 用 WebSocket 获取 cookies（更可靠）
+        return _get_cookies_via_ws(ws_url)
+        
+    except Exception as e:
+        print(f"  CDP提取cookies异常: {e}")
+        # fallback: 返回验证通过信号
+        return {"__captcha_passed__": "true"}
+
+
+def _get_cookies_simple(port: int) -> Optional[Dict[str, str]]:
+    """简单方式获取 cookies（通过 CDP HTTP 接口）"""
+    try:
+        # 通过 CDP 的 /json/list 获取页面信息
+        # 然后用 sessionStorage 注入 JS 获取 document.cookie
+        # 但这种方式有限制，不如 WebSocket 可靠
+        return {"__captcha_passed__": "true"}
+    except Exception:
+        return None
+
+
+def _get_cookies_via_ws(ws_url: str) -> Optional[Dict[str, str]]:
+    """通过 WebSocket 获取 cookies"""
+    try:
+        import websocket
+        ws = websocket.create_connection(ws_url, timeout=10)
+        
+        # 发送 Network.enable
+        ws.send(json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
+        ws.recv(timeout=5)  # 接收响应
+        
+        # 发送 Network.getAllCookies
+        ws.send(json.dumps({"id": 2, "method": "Network.getAllCookies", "params": {}}))
+        result = json.loads(ws.recv(timeout=5))
+        
+        ws.close()
+        
+        cookies_list = result.get('result', {}).get('cookies', [])
+        print(f"  CDP: 获取到 {len(cookies_list)} 个 cookies")
+        
+        # 筛选 goofish.com / taobao.com 的 cookies
+        filtered = {}
+        for c in cookies_list:
+            domain = c.get('domain', '')
+            if 'goofish' in domain or 'taobao' in domain:
+                name = c.get('name', '')
+                value = c.get('value', '')
+                if name and value:
+                    filtered[name] = value
+        
+        print(f"  CDP: 过滤后 {len(filtered)} 个闲鱼相关 cookies")
+        
+        # 检查是否包含 x5 相关
+        x5_count = sum(1 for k in filtered if k.lower().startswith('x5') or 'x5sec' in k.lower())
+        print(f"  CDP: 其中 {x5_count} 个 x5 相关 cookies")
+        
+        return filtered if filtered else {"__captcha_passed__": "true"}
+        
+    except ImportError:
+        print("  websocket-client 未安装，返回验证通过信号")
+        return {"__captcha_passed__": "true"}
+    except Exception as e:
+        print(f"  WebSocket获取cookies失败: {e}")
+        return {"__captcha_passed__": "true"}
 
 
 def solve_slider_captcha(
@@ -116,12 +212,12 @@ def solve_slider_captcha(
 ) -> Tuple[bool, Optional[Dict[str, str]], str]:
     """
     使用 pyautogui 在真实 Chrome 上完成滑块验证
-
+    
     Args:
         captcha_url: 风控验证链接
         account_id: 账号标识
         timeout: 超时秒数
-        cookies_str: 可选，账号 cookies（用于续期链接）
+        cookies_str: 可选，账号 cookies
 
     Returns:
         (success, cookies_dict, message)
@@ -131,25 +227,23 @@ def solve_slider_captcha(
     chrome_path = _get_chrome_path()
     print(f"[{account_id}] Chrome路径: {chrome_path}")
 
-    # 启动 Chrome（带窗口，不用 headless）
+    # 启动 Chrome（带远程调试端口 + App模式）
+    user_data_dir = os.path.join(
+        os.environ.get("TEMP", "/tmp"),
+        "xianyu_captcha_chrome_profile"
+    )
+    os.makedirs(user_data_dir, exist_ok=True)
+
     cmd = [
         chrome_path,
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-background-timer-throttling",
-        f"--app={captcha_url}",  # 以 App 模式打开，更干净
+        f"--remote-debugging-port={DEBUG_PORT}",
+        f"--app={captcha_url}",
         "--window-size=800,600",
+        f"--user-data-dir={user_data_dir}",
     ]
-
-    # 如果有 cookies，先注入
-    if cookies_str:
-        # 用 --user-data-dir 保持登录态
-        user_data_dir = os.path.join(
-            os.environ.get("TEMP", "/tmp"),
-            "xianyu_captcha_chrome_profile"
-        )
-        os.makedirs(user_data_dir, exist_ok=True)
-        cmd.append(f"--user-data-dir={user_data_dir}")
 
     try:
         process = subprocess.Popen(cmd)
@@ -161,14 +255,28 @@ def solve_slider_captcha(
         time.sleep(random.uniform(3, 5))
 
         # ====== 核心步骤：用 pyautogui 拖动滑块 ======
-        success, cookies = _drag_slider_with_pyautogui(account_id, timeout)
+        success = _drag_slider_with_pyautogui(account_id, timeout)
 
-        if success and cookies:
-            print(f"[{account_id}] 滑块验证成功，获取到 {len(cookies)} 个 cookies")
-            return True, cookies, "验证成功"
+        # 等待验证结果生效
+        time.sleep(random.uniform(1, 2))
+
+        # ====== 提取 cookies ======
+        cookies = None
+        if success:
+            print(f"[{account_id}] 验证通过，尝试提取cookies...")
+            cookies = _extract_cookies_via_cdp()
+            if cookies and cookies.get("__captcha_passed__"):
+                # 没拿到真实cookies但有通过信号
+                print(f"[{account_id}] 未能提取真实cookies，返回验证通过信号")
+            elif cookies:
+                x5_count = sum(1 for k in cookies if k.lower().startswith('x5') or 'x5sec' in k.lower())
+                print(f"[{account_id}] 成功提取 {len(cookies)} 个cookies（含{x5_count}个x5）")
+            
+        if success:
+            return True, cookies or {"__captcha_passed__": "true"}, "验证成功"
         else:
             print(f"[{account_id}] 滑块验证失败")
-            return False, None, "验证失败，未获取到x5 cookies"
+            return False, None, "验证失败"
 
     except Exception as e:
         print(f"[{account_id}] 滑块验证异常: {e}")
@@ -188,27 +296,16 @@ def solve_slider_captcha(
 def _drag_slider_with_pyautogui(
     account_id: str,
     timeout: int = 40,
-) -> Tuple[bool, Optional[Dict[str, str]]]:
-    """
-    使用 pyautogui 驱动物理鼠标完成滑块拖动
-
-    Returns:
-        (success, cookies_dict)
-    """
-    # 获取屏幕尺寸
+) -> bool:
+    """使用 pyautogui 驱动物理鼠标完成滑块拖动"""
     screen_w, screen_h = pyautogui.size()
     print(f"[{account_id}] 屏幕尺寸: {screen_w}x{screen_h}")
 
     # 查找滑块位置
-    # 假设 Chrome 窗口居中，滑块大约在窗口中下部
-    # 这里需要根据实际截图来定位
-
-    # 方法1：截图后用图像识别找滑块位置
     try:
         slider_pos = _find_slider_position()
         if not slider_pos:
             print(f"[{account_id}] 未找到滑块位置，使用默认位置")
-            # 默认位置：屏幕中央偏下
             slider_x = screen_w // 2 - 150
             slider_y = screen_h // 2 + 50
         else:
@@ -221,23 +318,15 @@ def _drag_slider_with_pyautogui(
     print(f"[{account_id}] 滑块位置: ({slider_x}, {slider_y})")
 
     # 生成真人轨迹
-    slide_distance = 260  # 默认滑动距离
-    trail = _generate_human_trail(slide_distance)
+    trail = _generate_human_trail(260)
 
     # 执行拖动
     print(f"[{account_id}] 开始拖动滑块...")
-
-    # 移动鼠标到滑块起始位置
     pyautogui.moveTo(slider_x, slider_y, duration=random.uniform(0.3, 0.5))
-
-    # 模拟人类按下前的短暂停顿
     time.sleep(random.uniform(0.1, 0.3))
-
-    # 按下鼠标
     pyautogui.mouseDown()
 
     try:
-        # 按轨迹拖动
         current_x = slider_x
         current_y = slider_y
 
@@ -245,33 +334,19 @@ def _drag_slider_with_pyautogui(
             current_x += dx
             current_y += dy
             pyautogui.moveTo(current_x, current_y, duration=0)
-            # 精确等待
             time.sleep(dt / 1000.0)
 
-        # 松手前短暂停顿（模拟人类犹豫）
         time.sleep(random.uniform(0.1, 0.3))
-
-        # 释放鼠标
         pyautogui.mouseUp()
-
-        # 等待验证结果
         time.sleep(random.uniform(2, 3))
 
-        # 验证是否通过——截图检查
         success = _check_verification_result(account_id)
-
-        # 如果成功，从浏览器获取 cookies
-        cookies = None
-        if success:
-            cookies = _extract_cookies_from_browser(account_id)
-
-        return success, cookies
+        return success
 
     except Exception as e:
         print(f"[{account_id}] 拖动过程异常: {e}")
-        return False, None
+        return False
     finally:
-        # 确保鼠标释放
         try:
             pyautogui.mouseUp()
         except Exception:
@@ -279,25 +354,14 @@ def _drag_slider_with_pyautogui(
 
 
 def _find_slider_position() -> Optional[Tuple[int, int]]:
-    """
-    通过截图和图像识别找到滑块位置
-
-    目前简化实现：使用 pyautogui 截图 + 像素匹配
-    后续可以替换为更精确的图像识别方案
-    """
+    """通过截图和颜色匹配找到滑块位置"""
     try:
-        # 截屏
         screenshot = pyautogui.screenshot()
-
-        # 查找滑块图标（红色/橙色小方块）
-        # 这里用颜色范围匹配
         width, height = screenshot.size
 
-        # 遍历屏幕中下部区域
         for y in range(height // 3, height * 2 // 3):
             for x in range(width // 4, width * 3 // 4, 10):
                 r, g, b = screenshot.getpixel((x, y))
-                # NoCaptcha 滑块通常是暗橙色/红色
                 if r > 200 and g < 100 and b < 100:
                     return (x, y)
 
@@ -307,56 +371,23 @@ def _find_slider_position() -> Optional[Tuple[int, int]]:
 
 
 def _check_verification_result(account_id: str) -> bool:
-    """
-    检查滑块验证是否通过
-
-    方法：截图后检查是否还有滑块/验证码关键词
-    """
+    """检查滑块验证是否通过"""
     try:
-        # 简化实现：等待3秒后截图验证
-        # 如果验证通过，页面会跳转，滑块消失
         screenshot = pyautogui.screenshot()
         width, height = screenshot.size
 
-        # 查找滑块是否还在
-        slider_found = False
+        # 如果滑块消失 = 验证通过
         for y in range(height // 3, height * 2 // 3, 20):
             for x in range(width // 4, width * 3 // 4, 20):
                 try:
                     r, g, b = screenshot.getpixel((x, y))
                     if r > 200 and g < 100 and b < 100:
-                        slider_found = True
-                        break
+                        return False  # 滑块还在
                 except Exception:
                     pass
-            if slider_found:
-                break
 
-        return not slider_found  # 滑块消失 = 验证通过
+        return True  # 滑块消失 = 验证通过
 
     except Exception as e:
         print(f"[{account_id}] 检查验证结果异常: {e}")
         return False
-
-
-def _extract_cookies_from_browser(account_id: str) -> Optional[Dict[str, str]]:
-    """
-    从浏览器获取 cookies
-
-    注意：此处在 Windows 上运行，需要从 Chrome 进程获取 cookies
-    简化实现：返回 None，由 Docker 端通过刷新 token 来获取新 cookies
-    """
-    # 验证通过后，Docker 端会用新 cookies 自动刷新 token
-    # Windows 端只需要确认"验证通过"即可
-    # 不需要直接从 Windows 浏览器提取 cookies
-    # 因为验证通过后，服务端会下发新的 x5sec 到请求的 cookies 中
-    # Docker 端收到成功响应后可以直接刷新 token
-
-    # 但更好的方案是：验证通过后，让浏览器访问 goofish.com
-    # 然后用 Selenium/CDP 获取 cookies
-    # 这需要在 Chrome 启动时启用远程调试端口
-
-    print(f"[{account_id}] 验证通过，返回成功标志（由Docker端刷新token获取新cookies）")
-    # 返回一个特殊标记，让 Docker 端知道验证通过
-    # Docker 端收到后会重新尝试 refresh_token
-    return {"__captcha_passed__": "true"}

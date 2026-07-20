@@ -1787,6 +1787,14 @@ class XianyuLive:
                                             self.cookies_str = cookies_str
                                             self.cookies = updated_cookies
                                             await self.update_config_cookies()
+                                        elif remote_cookies.get("__captcha_passed__"):
+                                            # 远程端验证通过信号（Windows端无法提取cookies，但人机验证已通过）
+                                            # 服务端已放行，直接重试 refresh_token 即可获取新 token
+                                            captcha_method = "remote_solver_passed"
+                                            new_cookies_str = "__captcha_passed__"
+                                            logger.info(
+                                                f"【{self.cookie_id}】远程过滑块验证通过信号，服务端已放行，重试token刷新"
+                                            )
                                     elif status == "url_expired":
                                         logger.warning(f"【{self.cookie_id}】远程反馈链接过期，尝试刷新URL")
                                     elif status == "fallback":
@@ -1814,7 +1822,7 @@ class XianyuLive:
                                         from db_manager import db_manager
                                         db_manager.update_risk_control_log(
                                             log_id=log_id,
-                                            processing_result=f"滑块验证成功（{captcha_method}），耗时: {captcha_duration:.2f}秒, cookies长度: {len(new_cookies_str)}",
+                                            processing_result=f"滑块验证成功（{captcha_method}），耗时: {captcha_duration:.2f}秒" + ("（验证通过信号，重试token刷新" if new_cookies_str == "__captcha_passed__" else ", cookies长度: " + str(len(new_cookies_str))),
                                             processing_status='success'
                                         )
                                     except Exception as update_e:
