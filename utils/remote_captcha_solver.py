@@ -129,14 +129,23 @@ class RemoteCaptchaSolver:
                 str(k).lower().startswith("x5") or "x5sec" in str(k).lower()
                 for k in cookies.keys()
             )
+            # 检查是否包含验证通过信号
+            has_passed_signal = "__captcha_passed__" in cookies
+
             if has_x5:
                 logger.info(
                     f"【{account_id}】远程过滑块成功, cookies数量={len(cookies)}"
                 )
                 return "ok", cookies, message
+            elif has_passed_signal:
+                logger.info(
+                    f"【{account_id}】远程过滑块验证通过信号, cookies数量={len(cookies)}, "
+                    f"keys={list(cookies.keys())[:5]}"
+                )
+                return "ok", cookies, message
             else:
                 logger.warning(
-                    f"【{account_id}】远程过滑块返回成功但无x5 cookie: "
+                    f"【{account_id}】远程过滑块返回成功但无x5 cookie和通过信号: "
                     f"keys={list(cookies.keys())[:5]}"
                 )
                 return "fail", cookies, "未获取到x5相关cookies"
