@@ -581,7 +581,8 @@ class DBManager:
             ('smtp_password', '', 'SMTP登录密码/授权码'),
             ('smtp_from', '', '发件人显示名（留空则使用用户名）'),
             ('smtp_use_tls', 'true', '是否启用TLS'),
-            ('smtp_use_ssl', 'false', '是否启用SSL')
+            ('smtp_use_ssl', 'false', '是否启用SSL'),
+            ('captcha.slider_mode', 'browser', '滑块滑动方式: browser=浏览器自动滑动, real_mouse=真实鼠标滑动')
             ''')
 
             # 检查并升级数据库

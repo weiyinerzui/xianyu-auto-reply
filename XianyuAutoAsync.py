@@ -24,8 +24,8 @@ import aiohttp
 from collections import defaultdict
 from db_manager import db_manager
 
-# 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
-# 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
+# 滑块验证：使用 utils/captcha/ 编排器（真实鼠标 + CDP + DrissionPage 三级链路）
+# 密码登录仍使用 utils/xianyu_slider_stealth.py（独立功能，不涉及滑块编排）
 
 class ConnectionState(Enum):
     """WebSocket连接状态枚举"""
@@ -2013,34 +2013,46 @@ class XianyuLive:
 
             logger.info(f"【{self.cookie_id}】验证URL: {verification_url}")
 
-            # 使用滑块验证器（独立实例，解决并发冲突）
+            # 使用新的滑块验证引擎（支持真实鼠标 + CDP + DrissionPage 三级链路）
             try:
-                # 使用集成的滑块验证方法（无需猴子补丁）
-                from utils.xianyu_slider_stealth import XianyuSliderStealth
-                logger.info(f"【{self.cookie_id}】XianyuSliderStealth导入成功，使用滑块验证")
+                from utils.captcha.orchestrator import run_slider_verification_with_fallback
+                from utils.captcha.slider_mode import refresh_slider_mode_from_database, is_real_mouse_slider_mode
+                logger.info(f"【{self.cookie_id}】滑块编排器导入成功")
 
-                # 创建独立的滑块验证实例（每个用户独立实例，避免并发冲突）
-                slider_stealth = XianyuSliderStealth(
-                    # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
-                    user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
-                    enable_learning=True,  # 启用学习功能
-                    headless=bool(not os.getenv('DISPLAY'))  # 有 DISPLAY 时用有头模式，规避 headless 指纹检测
-                )
+                # 每次滑块任务前从数据库刷新滑块模式（支持前端实时切换）
+                try:
+                    await refresh_slider_mode_from_database()
+                except Exception:
+                    pass
 
-                # 在线程池中执行滑块验证
+                if is_real_mouse_slider_mode():
+                    logger.info(f"【{self.cookie_id}】当前滑块模式: 真实鼠标（失败不回退）")
+                else:
+                    logger.info(f"【{self.cookie_id}】当前滑块模式: 浏览器自动滑动（CDP+DrissionPage兜底）")
+
+                # 在线程池中执行滑块验证（orchestrator 是同步函数）
                 import asyncio
                 import concurrent.futures
 
                 loop = asyncio.get_event_loop()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    # 执行滑块验证
-                    success, cookies = await loop.run_in_executor(
+                    ok, cookies, engine = await loop.run_in_executor(
                         executor,
-                        slider_stealth.run,
-                        verification_url
+                        run_slider_verification_with_fallback,
+                        self.cookie_id,
+                        verification_url,
+                        True,
+                        bool(not os.getenv('DISPLAY')),
+                        40,
+                        self.cookies_str,
+                        None,
+                        None,
+                        "local",
+                        None,
                     )
 
-                if success and cookies:
+                success = ok and cookies
+                if success:
                     logger.info(f"【{self.cookie_id}】滑块验证成功，获取到新的cookies")
 
                     # 只提取x5sec相关的cookie值进行更新
@@ -2135,12 +2147,12 @@ class XianyuLive:
                     return None
 
             except ImportError as import_e:
-                logger.error(f"【{self.cookie_id}】XianyuSliderStealth导入失败: {import_e}")
-                logger.error(f"【{self.cookie_id}】请安装Playwright库: pip install playwright")
+                logger.error(f"【{self.cookie_id}】滑块编排器导入失败: {import_e}")
+                logger.error(f"【{self.cookie_id}】请安装依赖: pip install playwright sqlalchemy")
 
                 # 记录导入失败到日志文件
-                log_captcha_event(self.cookie_id, "XianyuSliderStealth导入失败", False,
-                    f"Playwright未安装, 错误: {import_e}")
+                log_captcha_event(self.cookie_id, "滑块编排器导入失败", False,
+                    f"依赖未安装, 错误: {import_e}")
 
                 # 发送通知
                 await self.send_token_refresh_notification(

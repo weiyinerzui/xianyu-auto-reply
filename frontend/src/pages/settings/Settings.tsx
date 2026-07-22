@@ -6,6 +6,7 @@ import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading, ButtonLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
+import { SliderModeSetting } from './SliderModeSetting'
 import type { SystemSettings, Account } from '@/types'
 
 export function Settings() {
@@ -368,6 +369,11 @@ export function Settings() {
                   </label>
                 </div>
               </div>
+
+                <SliderModeSetting
+                  value={settings?.['captcha.slider_mode']}
+                  onSaved={(mode) => setSettings((current) => current ? { ...current, 'captcha.slider_mode': mode } : current)}
+                />
             </div>
 
             {/* AI Settings */}
