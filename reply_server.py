@@ -3143,6 +3143,57 @@ async def trigger_scheduled_task(task_code: str, _: None = Depends(require_auth)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ------------------------- 卡券-商品关联接口 -------------------------
+
+@app.get("/cards/{card_id}/relations")
+def get_card_relations(card_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取卡券关联的商品列表"""
+    from db_manager import db_manager
+    try:
+        relations = db_manager.get_card_item_relations(card_id=card_id)
+        return {"relations": relations}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CardRelationIn(BaseModel):
+    item_id: str
+
+
+@app.post("/cards/{card_id}/relations")
+def add_card_relation(card_id: int, data: CardRelationIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """添加卡券-商品关联"""
+    from db_manager import db_manager
+    try:
+        item_id = data.item_id.strip()
+        if not item_id:
+            raise HTTPException(status_code=400, detail="商品ID不能为空")
+        user_id = current_user.get('user_id', 1)
+        success = db_manager.add_card_item_relation(card_id, item_id, user_id)
+        if success:
+            return {"msg": "关联添加成功"}
+        raise HTTPException(status_code=400, detail="关联失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/cards/{card_id}/relations/{item_id}")
+def remove_card_relation(card_id: int, item_id: str, _: None = Depends(require_auth)):
+    """删除卡券-商品关联"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.remove_card_item_relation(card_id, item_id)
+        if success:
+            return {"msg": "关联已删除"}
+        raise HTTPException(status_code=400, detail="删除失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------- 注册设置接口 -------------------------
 
 @app.get('/registration-status')

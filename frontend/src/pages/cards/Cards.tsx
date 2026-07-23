@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent, ChangeEvent } from 'react'
-import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image } from 'lucide-react'
+import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image, Package } from 'lucide-react'
 import { getCards, deleteCard, createCard, updateCard, type CardData } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
 import { Select } from '@/components/common/Select'
 import { post } from '@/utils/request'
+import { getCardRelations, addCardRelation, removeCardRelation, type CardItemRelation } from '@/api/cardRelations'
 
 type ModalType = 'add' | 'edit' | null
 
@@ -114,6 +115,11 @@ export function Cards() {
   const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false)
   const [previewImageUrl, setPreviewImageUrl] = useState('')
 
+  // 关联商品状态
+  const [relations, setRelations] = useState<CardItemRelation[]>([])
+  const [newItemId, setNewItemId] = useState('')
+  const [relationLoading, setRelationLoading] = useState(false)
+
   const loadCards = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
@@ -179,6 +185,10 @@ export function Cards() {
       setImagePreview(card.image_url)
     }
     setActiveModal('edit')
+    // 加载已关联的商品
+    if (card.id) {
+      loadRelations(card.id)
+    }
   }
 
   const closeModal = () => {
@@ -187,6 +197,46 @@ export function Cards() {
     setFormData(initialFormData)
     setImagePreview(null)
     setSubmitting(false)
+    setRelations([])
+    setNewItemId('')
+  }
+
+  // 加载卡券关联的商品
+  const loadRelations = async (cardId: number) => {
+    try {
+      const data = await getCardRelations(cardId)
+      setRelations(data.relations || [])
+    } catch {
+      setRelations([])
+    }
+  }
+
+  // 添加关联
+  const handleAddRelation = async () => {
+    if (!editingCardId || !newItemId.trim()) return
+    setRelationLoading(true)
+    try {
+      await addCardRelation(editingCardId, newItemId.trim())
+      addToast({ type: 'success', message: '关联添加成功' })
+      setNewItemId('')
+      await loadRelations(editingCardId)
+    } catch {
+      addToast({ type: 'error', message: '关联添加失败' })
+    } finally {
+      setRelationLoading(false)
+    }
+  }
+
+  // 删除关联
+  const handleRemoveRelation = async (itemId: string) => {
+    if (!editingCardId) return
+    try {
+      await removeCardRelation(editingCardId, itemId)
+      addToast({ type: 'success', message: '关联已删除' })
+      await loadRelations(editingCardId)
+    } catch {
+      addToast({ type: 'error', message: '删除失败' })
+    }
   }
 
   const updateFormField = <K extends keyof CardFormData>(field: K, value: CardFormData[K]) => {

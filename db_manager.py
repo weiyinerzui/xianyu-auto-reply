@@ -19,7 +19,7 @@ ALLOWED_TABLES = frozenset([
     'notification_channels', 'default_replies', 'item_info',
     'orders', 'chat_logs', 'users', 'system_settings',
     'email_verifications', 'captcha_codes', 'message_notifications',
-    'user_settings', 'risk_control_logs', 'default_reply_records',
+    'user_settings', 'risk_control_logs', 'default_reply_records', 'card_item_relations',
     'item_replay', 'old_notification_channels', 'legacy_delivery_rules',
     'old_keywords', 'backup_cookies'
 ])
@@ -340,6 +340,21 @@ class DBManager:
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
             ''')
+
+            # 创建卡券-商品关联表（多对多）
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS card_item_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                card_id INTEGER NOT NULL,
+                item_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(card_id, item_id),
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+            )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cir_item_id ON card_item_relations(item_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cir_card_id ON card_item_relations(card_id)')
 
             # 创建订单表
             cursor.execute('''
@@ -2798,6 +2813,97 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有系统设置失败: {e}")
                 return {}
+
+    # ==================== 卡券-商品关联操作 ====================
+
+    def get_card_item_relations(self, card_id: int = None, item_id: str = None, user_id: int = None) -> List[Dict]:
+        """获取卡券-商品关联记录"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                conditions = []
+                params = []
+                if card_id is not None:
+                    conditions.append("card_id = ?")
+                    params.append(card_id)
+                if item_id is not None:
+                    conditions.append("item_id = ?")
+                    params.append(item_id)
+                if user_id is not None:
+                    conditions.append("user_id = ?")
+                    params.append(user_id)
+                where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                self._execute_sql(cursor, f"""SELECT id, card_id, item_id, user_id, created_at
+                    FROM card_item_relations{where_clause} ORDER BY created_at DESC""", tuple(params))
+                cols = ['id', 'card_id', 'item_id', 'user_id', 'created_at']
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取卡券商品关联失败: {e}")
+                return []
+
+    def add_card_item_relation(self, card_id: int, item_id: str, user_id: int = 1) -> bool:
+        """添加卡券-商品关联"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "INSERT OR IGNORE INTO card_item_relations (card_id, item_id, user_id) VALUES (?, ?, ?)",
+                    (card_id, item_id, user_id))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"添加卡券商品关联失败: {e}")
+                return False
+
+    def remove_card_item_relation(self, card_id: int, item_id: str) -> bool:
+        """删除卡券-商品关联"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "DELETE FROM card_item_relations WHERE card_id = ? AND item_id = ?",
+                    (card_id, item_id))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"删除卡券商品关联失败: {e}")
+                return False
+
+    def get_cards_by_item_id(self, item_id: str, user_id: int = None) -> List[Dict]:
+        """根据商品ID获取关联的卡券（含卡券完整信息）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                user_cond = " AND cir.user_id = ?" if user_id is not None else ""
+                params = [item_id]
+                if user_id is not None:
+                    params.append(user_id)
+                self._execute_sql(cursor, f"""SELECT c.id, c.name, c.type, c.api_config, c.text_content,
+                    c.data_content, c.image_url, c.description, c.enabled, c.delay_seconds,
+                    c.is_multi_spec, c.spec_name, c.spec_value
+                    FROM card_item_relations cir
+                    JOIN cards c ON cir.card_id = c.id
+                    WHERE cir.item_id = ? AND c.enabled = 1{user_cond}""", tuple(params))
+                cols = ['id', 'name', 'type', 'api_config', 'text_content', 'data_content',
+                        'image_url', 'description', 'enabled', 'delay_seconds',
+                        'is_multi_spec', 'spec_name', 'spec_value']
+                results = []
+                for row in cursor.fetchall():
+                    d = dict(zip(cols, row))
+                    d['enabled'] = bool(d['enabled']) if d['enabled'] is not None else True
+                    d['is_multi_spec'] = bool(d['is_multi_spec']) if d['is_multi_spec'] is not None else False
+                    # 解析 api_config
+                    if d.get('api_config'):
+                        try:
+                            import json
+                            d['api_config'] = json.loads(d['api_config'])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    results.append(d)
+                return results
+            except Exception as e:
+                logger.error(f"根据商品ID获取卡券失败: {e}")
+                return []
 
     # ==================== 定时任务配置操作 ====================
 

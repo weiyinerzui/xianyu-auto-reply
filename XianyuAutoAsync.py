@@ -5015,41 +5015,74 @@ class XianyuLive:
                     logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
                     return None
 
-            # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
+            # 优先：通过卡券-商品关联表精确匹配（item_id 直接关联）
             delivery_rules = []
-            
-            # 隔离不同用户的规则：获取当前 cookie_id 所属的 user_id
-            cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
-            user_id = cookie_info.get('user_id') if cookie_info else None
+            if item_id and item_id != "未知商品":
+                try:
+                    related_cards = db_manager.get_cards_by_item_id(item_id, user_id=user_id)
+                    if related_cards:
+                        logger.info(f"✅ 通过商品关联表找到 {len(related_cards)} 张关联卡券: {item_id}")
+                        # 转换为 delivery_rules 兼容格式
+                        for card in related_cards:
+                            # 多规格过滤
+                            if is_multi_spec and not card.get('is_multi_spec'):
+                                continue
+                            if not is_multi_spec and card.get('is_multi_spec'):
+                                # 非多规格商品但卡券是多规格，检查规格是否匹配
+                                if spec_name and spec_value:
+                                    if card.get('spec_name') != spec_name or card.get('spec_value') != spec_value:
+                                        continue
+                                else:
+                                    continue
+                            delivery_rules.append({
+                                'id': card.get('id'),
+                                'card_id': card.get('id'),
+                                'card_name': card.get('name'),
+                                'card_type': card.get('type'),
+                                'api_config': card.get('api_config'),
+                                'text_content': card.get('text_content'),
+                                'data_content': card.get('data_content'),
+                                'image_url': card.get('image_url'),
+                                'card_enabled': card.get('enabled', True),
+                                'card_description': card.get('description'),
+                                'card_delay_seconds': card.get('delay_seconds', 0),
+                                'is_multi_spec': card.get('is_multi_spec', False),
+                                'spec_name': card.get('spec_name'),
+                                'spec_value': card.get('spec_value'),
+                            })
+                except Exception as rel_e:
+                    logger.warning(f"通过商品关联表匹配卡券失败，回退到关键词匹配: {rel_e}")
 
-            if is_multi_spec:
-                # 多规格商品：只匹配多规格发货规则
-                if spec_name and spec_value:
-                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}], user_id={user_id}")
-                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value, user_id=user_id)
-                    # 过滤只保留多规格卡券
-                    delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
-                    
-                    if delivery_rules:
-                        logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+            # 回退：关键词匹配（关联表无结果时）
+            if not delivery_rules:
+                logger.info(f"关联表无匹配，回退到关键词匹配: {search_text[:50]}...")
+
+                if is_multi_spec:
+                    # 多规格商品：只匹配多规格发货规则
+                    if spec_name and spec_value:
+                        logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}], user_id={user_id}")
+                        delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value, user_id=user_id)
+                        delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
+
+                        if delivery_rules:
+                            logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+                        else:
+                            logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
+                            return None
                     else:
-                        logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
+                        logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
                         return None
                 else:
-                    logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
-                    return None
-            else:
-                # 非多规格商品：只匹配非多规格发货规则
-                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}..., user_id={user_id}")
-                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=user_id)
-                # 过滤只保留非多规格卡券
-                delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
-                
-                if delivery_rules:
-                    logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
-                else:
-                    logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
-                    return None
+                    # 非多规格商品：只匹配非多规格发货规则
+                    logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}..., user_id={user_id}")
+                    delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text, user_id=user_id)
+                    delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
+
+                    if delivery_rules:
+                        logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
+                    else:
+                        logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
+                        return None
 
             # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
             if len(delivery_rules) > 1:
