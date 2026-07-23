@@ -57,6 +57,7 @@ const adminNavItems: NavItem[] = [
   { icon: Shield, label: '风控日志', path: '/admin/risk-logs', adminOnly: true },
   { icon: Database, label: '数据管理', path: '/admin/data', adminOnly: true },
   { icon: FileText, label: '回复日志', path: '/admin/auto-reply-logs', adminOnly: true },
+  { icon: Brain, label: '意图统计', path: '/admin/intent-stats', adminOnly: true },
 ]
 
 const bottomNavItems: NavItem[] = [

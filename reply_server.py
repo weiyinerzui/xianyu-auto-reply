@@ -3183,6 +3183,23 @@ def get_auto_reply_log_stats_api(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ------------------------- 意图识别统计接口 -------------------------
+
+@app.get("/intent-stats")
+def get_intent_stats_api(
+    cookie_id: Optional[str] = None,
+    days: int = 7,
+    _: None = Depends(require_auth),
+):
+    """获取意图识别统计（按策略、状态、日期趋势）"""
+    from db_manager import db_manager
+    try:
+        stats = db_manager.get_intent_stats(cookie_id=cookie_id, days=min(max(days, 1), 90))
+        return {"stats": stats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------- 消息过滤规则接口 -------------------------
 
 class MessageFilterIn(BaseModel):

@@ -2958,6 +2958,63 @@ class DBManager:
                 logger.error(f"获取自动回复日志统计失败: {e}")
                 return {"total": 0, "by_strategy": {}, "by_status": {}}
 
+    def get_intent_stats(self, cookie_id: str = None, days: int = 7) -> Dict:
+        """获取意图识别统计（按策略、状态、日期维度）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                user_cond = " WHERE cookie_id = ?" if cookie_id else ""
+                params = [cookie_id] if cookie_id else []
+                date_cond = " AND created_at >= datetime('now', ?)" if True else ""
+                params_with_date = params + [f'-{days} days']
+
+                # 按策略统计
+                self._execute_sql(cursor,
+                    f"""SELECT reply_strategy, COUNT(*) FROM auto_reply_message_logs
+                    WHERE created_at >= datetime('now', ?){' AND cookie_id = ?' if cookie_id else ''}
+                    GROUP BY reply_strategy""",
+                    tuple([f'-{days} days'] + (params if params else [])))
+                by_strategy = {row[0]: row[1] for row in cursor.fetchall()}
+
+                # 按发送状态统计
+                self._execute_sql(cursor,
+                    f"""SELECT send_status, COUNT(*) FROM auto_reply_message_logs
+                    WHERE created_at >= datetime('now', ?){' AND cookie_id = ?' if cookie_id else ''}
+                    GROUP BY send_status""",
+                    tuple([f'-{days} days'] + (params if params else [])))
+                by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
+                # 按日期统计趋势
+                self._execute_sql(cursor,
+                    f"""SELECT date(created_at) as d, reply_strategy, COUNT(*) FROM auto_reply_message_logs
+                    WHERE created_at >= datetime('now', ?){' AND cookie_id = ?' if cookie_id else ''}
+                    GROUP BY d, reply_strategy ORDER BY d""",
+                    tuple([f'-{days} days'] + (params if params else [])))
+                daily_trend = {}
+                for row in cursor.fetchall():
+                    date_str, strategy, count = row[0], row[1], row[2]
+                    if date_str not in daily_trend:
+                        daily_trend[date_str] = {}
+                    daily_trend[date_str][strategy] = count
+
+                # 总数
+                self._execute_sql(cursor,
+                    f"""SELECT COUNT(*) FROM auto_reply_message_logs
+                    WHERE created_at >= datetime('now', ?){' AND cookie_id = ?' if cookie_id else ''}""",
+                    tuple([f'-{days} days'] + (params if params else [])))
+                total = cursor.fetchone()[0]
+
+                return {
+                    "total": total,
+                    "by_strategy": by_strategy,
+                    "by_status": by_status,
+                    "daily_trend": daily_trend,
+                    "days": days,
+                }
+            except Exception as e:
+                logger.error(f"获取意图统计失败: {e}")
+                return {"total": 0, "by_strategy": {}, "by_status": {}, "daily_trend": {}, "days": days}
+
     def cleanup_old_auto_reply_logs(self, days: int = 30) -> int:
         """清理过期自动回复日志"""
         with self.lock:
