@@ -195,19 +195,25 @@ export function ScheduledTasks() {
                   <span className="switch-slider"></span>
                 </label>
 
-                {/* 手动触发 */}
-                <button
-                  onClick={() => void handleTrigger(task)}
-                  disabled={triggering === task.task_code}
-                  title="手动触发"
-                  className="p-1.5 rounded-md text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {triggering === task.task_code ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
+                {/* 手动触发 — 仅全局任务可触发 */}
+                {(['db_backup', 'delivery_timeout'] as const).includes(task.task_code as 'db_backup' | 'delivery_timeout') ? (
+                  <button
+                    onClick={() => void handleTrigger(task)}
+                    disabled={triggering === task.task_code}
+                    title="手动触发"
+                    className="p-1.5 rounded-md text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {triggering === task.task_code ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="h-4 w-4" />
+                    )}
+                  </button>
+                ) : (
+                  <span title="实例级任务，无法手动触发" className="p-1.5 text-slate-300 dark:text-slate-600">
                     <Play className="h-4 w-4" />
-                  )}
-                </button>
+                  </span>
+                )}
               </div>
             </div>
           ))}
