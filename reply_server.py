@@ -3143,6 +3143,46 @@ async def trigger_scheduled_task(task_code: str, _: None = Depends(require_auth)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ------------------------- 自动回复日志接口 -------------------------
+
+@app.get("/auto-reply-logs")
+def get_auto_reply_logs_api(
+    cookie_id: Optional[str] = None,
+    reply_strategy: Optional[str] = None,
+    send_status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    _: None = Depends(require_auth),
+):
+    """获取自动回复日志列表（分页+筛选）"""
+    from db_manager import db_manager
+    try:
+        logs = db_manager.get_auto_reply_logs(
+            cookie_id=cookie_id,
+            reply_strategy=reply_strategy,
+            send_status=send_status,
+            limit=min(limit, 100),
+            offset=offset,
+        )
+        return {"logs": logs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auto-reply-logs/stats")
+def get_auto_reply_log_stats_api(
+    cookie_id: Optional[str] = None,
+    _: None = Depends(require_auth),
+):
+    """获取自动回复日志统计"""
+    from db_manager import db_manager
+    try:
+        stats = db_manager.get_auto_reply_log_stats(cookie_id=cookie_id)
+        return {"stats": stats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------- 消息过滤规则接口 -------------------------
 
 class MessageFilterIn(BaseModel):

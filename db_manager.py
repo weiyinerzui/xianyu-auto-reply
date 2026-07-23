@@ -20,6 +20,7 @@ ALLOWED_TABLES = frozenset([
     'orders', 'chat_logs', 'users', 'system_settings',
     'email_verifications', 'captcha_codes', 'message_notifications',
     'user_settings', 'risk_control_logs', 'default_reply_records', 'card_item_relations',
+    'message_filters', 'quick_phrases', 'auto_reply_message_logs',
     'item_replay', 'old_notification_channels', 'legacy_delivery_rules',
     'old_keywords', 'backup_cookies'
 ])
@@ -355,6 +356,57 @@ class DBManager:
             ''')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cir_item_id ON card_item_relations(item_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_cir_card_id ON card_item_relations(card_id)')
+
+            # 创建自动回复消息日志表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS auto_reply_message_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cookie_id TEXT NOT NULL,
+                user_id INTEGER DEFAULT 1,
+                chat_id TEXT,
+                item_id TEXT,
+                sender_user_id TEXT,
+                sender_user_name TEXT,
+                message_text TEXT,
+                reply_strategy TEXT DEFAULT 'none',
+                matched_keyword TEXT,
+                reply_text TEXT,
+                reply_image_url TEXT,
+                send_status TEXT DEFAULT 'unknown',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_arml_cookie_created ON auto_reply_message_logs(cookie_id, created_at)')
+
+            # 创建消息过滤规则表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filter_type TEXT NOT NULL CHECK (filter_type IN ('buyer_id', 'keyword', 'item_id')),
+                filter_value TEXT NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                enabled BOOLEAN DEFAULT TRUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_mf_type_value ON message_filters(filter_type, filter_value)')
+
+            # 创建快捷短语表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS quick_phrases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_qp_user_sort ON quick_phrases(user_id, sort_order)')
 
             # 创建订单表
             cursor.execute('''
@@ -2813,6 +2865,264 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有系统设置失败: {e}")
                 return {}
+
+    # ==================== 自动回复日志操作 ====================
+
+    def add_auto_reply_log(self, cookie_id: str, user_id: int = 1, chat_id: str = None,
+                           item_id: str = None, sender_user_id: str = None, sender_user_name: str = None,
+                           message_text: str = None, reply_strategy: str = 'none',
+                           matched_keyword: str = None, reply_text: str = None,
+                           reply_image_url: str = None, send_status: str = 'unknown',
+                           error_message: str = None) -> Optional[int]:
+        """添加自动回复日志（非阻塞，失败不中断主流程）"""
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, """INSERT INTO auto_reply_message_logs
+                    (cookie_id, user_id, chat_id, item_id, sender_user_id, sender_user_name,
+                     message_text, reply_strategy, matched_keyword, reply_text, reply_image_url,
+                     send_status, error_message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (cookie_id, user_id, chat_id, item_id, sender_user_id, sender_user_name,
+                     message_text, reply_strategy, matched_keyword, reply_text, reply_image_url,
+                     send_status, error_message))
+                self.conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logger.debug(f"添加自动回复日志失败（不影响主流程）: {e}")
+            return None
+
+    def update_auto_reply_log_status(self, log_id: int, send_status: str, error_message: str = None) -> bool:
+        """更新日志发送状态"""
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "UPDATE auto_reply_message_logs SET send_status = ?, error_message = ? WHERE id = ?",
+                    (send_status, error_message, log_id))
+                self.conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"更新自动回复日志状态失败: {e}")
+            return False
+
+    def get_auto_reply_logs(self, cookie_id: str = None, reply_strategy: str = None,
+                            send_status: str = None, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """获取自动回复日志列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                conditions = []
+                params = []
+                if cookie_id is not None:
+                    conditions.append("cookie_id = ?")
+                    params.append(cookie_id)
+                if reply_strategy is not None:
+                    conditions.append("reply_strategy = ?")
+                    params.append(reply_strategy)
+                if send_status is not None:
+                    conditions.append("send_status = ?")
+                    params.append(send_status)
+                where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                params.extend([limit, offset])
+                self._execute_sql(cursor, f"""SELECT id, cookie_id, user_id, chat_id, item_id,
+                    sender_user_id, sender_user_name, message_text, reply_strategy, matched_keyword,
+                    reply_text, reply_image_url, send_status, error_message, created_at
+                    FROM auto_reply_message_logs{where_clause}
+                    ORDER BY created_at DESC LIMIT ? OFFSET ?""", tuple(params))
+                cols = ['id', 'cookie_id', 'user_id', 'chat_id', 'item_id', 'sender_user_id',
+                        'sender_user_name', 'message_text', 'reply_strategy', 'matched_keyword',
+                        'reply_text', 'reply_image_url', 'send_status', 'error_message', 'created_at']
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取自动回复日志失败: {e}")
+                return []
+
+    def get_auto_reply_log_stats(self, cookie_id: str = None) -> Dict:
+        """获取自动回复日志统计"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                user_cond = " WHERE cookie_id = ?" if cookie_id else ""
+                params = [cookie_id] if cookie_id else []
+                self._execute_sql(cursor, f"SELECT COUNT(*) FROM auto_reply_message_logs{user_cond}", tuple(params))
+                total = cursor.fetchone()[0]
+                self._execute_sql(cursor, f"""SELECT reply_strategy, COUNT(*) FROM auto_reply_message_logs{user_cond}
+                    GROUP BY reply_strategy""", tuple(params))
+                by_strategy = {row[0]: row[1] for row in cursor.fetchall()}
+                self._execute_sql(cursor, f"""SELECT send_status, COUNT(*) FROM auto_reply_message_logs{user_cond}
+                    GROUP BY send_status""", tuple(params))
+                by_status = {row[0]: row[1] for row in cursor.fetchall()}
+                return {"total": total, "by_strategy": by_strategy, "by_status": by_status}
+            except Exception as e:
+                logger.error(f"获取自动回复日志统计失败: {e}")
+                return {"total": 0, "by_strategy": {}, "by_status": {}}
+
+    def cleanup_old_auto_reply_logs(self, days: int = 30) -> int:
+        """清理过期自动回复日志"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "DELETE FROM auto_reply_message_logs WHERE created_at < datetime('now', ?)",
+                    (f'-{days} days',))
+                deleted = cursor.rowcount
+                self.conn.commit()
+                return deleted
+            except Exception as e:
+                logger.error(f"清理自动回复日志失败: {e}")
+                return 0
+
+    # ==================== 消息过滤规则操作 ====================
+
+    def get_message_filters(self, user_id: int = None, filter_type: str = None) -> List[Dict]:
+        """获取消息过滤规则"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                conditions = []
+                params = []
+                if user_id is not None:
+                    conditions.append("user_id = ?")
+                    params.append(user_id)
+                if filter_type is not None:
+                    conditions.append("filter_type = ?")
+                    params.append(filter_type)
+                where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                self._execute_sql(cursor, f"""SELECT id, filter_type, filter_value, user_id, enabled, description, created_at
+                    FROM message_filters{where_clause} ORDER BY created_at DESC""", tuple(params))
+                cols = ['id', 'filter_type', 'filter_value', 'user_id', 'enabled', 'description', 'created_at']
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取消息过滤规则失败: {e}")
+                return []
+
+    def add_message_filter(self, filter_type: str, filter_value: str, user_id: int = 1, description: str = None) -> Optional[int]:
+        """添加消息过滤规则"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "INSERT INTO message_filters (filter_type, filter_value, user_id, enabled, description) VALUES (?, ?, ?, 1, ?)",
+                    (filter_type, filter_value, user_id, description))
+                self.conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                logger.error(f"添加消息过滤规则失败: {e}")
+                return None
+
+    def update_message_filter(self, filter_id: int, *, enabled: bool = None, filter_value: str = None) -> bool:
+        """更新消息过滤规则"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if enabled is not None:
+                    self._execute_sql(cursor, "UPDATE message_filters SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (1 if enabled else 0, filter_id))
+                if filter_value is not None:
+                    self._execute_sql(cursor, "UPDATE message_filters SET filter_value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (filter_value, filter_id))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"更新消息过滤规则失败: {e}")
+                return False
+
+    def delete_message_filter(self, filter_id: int) -> bool:
+        """删除消息过滤规则"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "DELETE FROM message_filters WHERE id = ?", (filter_id,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"删除消息过滤规则失败: {e}")
+                return False
+
+    def check_message_filtered(self, buyer_id: str, message_text: str, item_id: str, user_id: int = None) -> tuple:
+        """检查消息是否被过滤，返回 (is_filtered, reason)"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                user_cond = " AND user_id = ?" if user_id is not None else ""
+                params = []
+                if user_id is not None:
+                    params.append(user_id)
+                self._execute_sql(cursor, f"""SELECT filter_type, filter_value FROM message_filters
+                    WHERE enabled = 1{user_cond}""", tuple(params))
+                for row in cursor.fetchall():
+                    f_type, f_value = row[0], row[1]
+                    if f_type == 'buyer_id' and buyer_id and buyer_id == f_value:
+                        return (True, f"买家ID {buyer_id} 在黑名单中")
+                    if f_type == 'keyword' and message_text and f_value in message_text:
+                        return (True, f"消息包含屏蔽关键词: {f_value}")
+                    if f_type == 'item_id' and item_id and item_id == f_value:
+                        return (True, f"商品ID {item_id} 在过滤列表中")
+                return (False, None)
+            except Exception as e:
+                logger.error(f"检查消息过滤失败: {e}")
+                return (False, None)
+
+    # ==================== 快捷短语操作 ====================
+
+    def get_quick_phrases(self, user_id: int = None) -> List[Dict]:
+        """获取快捷短语列表"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is not None:
+                    self._execute_sql(cursor, "SELECT id, title, content, sort_order, user_id, created_at FROM quick_phrases WHERE user_id = ? ORDER BY sort_order ASC, id ASC", (user_id,))
+                else:
+                    self._execute_sql(cursor, "SELECT id, title, content, sort_order, user_id, created_at FROM quick_phrases ORDER BY sort_order ASC, id ASC")
+                cols = ['id', 'title', 'content', 'sort_order', 'user_id', 'created_at']
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取快捷短语失败: {e}")
+                return []
+
+    def add_quick_phrase(self, title: str, content: str, sort_order: int = 0, user_id: int = 1) -> Optional[int]:
+        """添加快捷短语"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor,
+                    "INSERT INTO quick_phrases (title, content, sort_order, user_id) VALUES (?, ?, ?, ?)",
+                    (title, content, sort_order, user_id))
+                self.conn.commit()
+                return cursor.lastrowid
+            except Exception as e:
+                logger.error(f"添加快捷短语失败: {e}")
+                return None
+
+    def update_quick_phrase(self, phrase_id: int, *, title: str = None, content: str = None, sort_order: int = None) -> bool:
+        """更新快捷短语"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if title is not None:
+                    self._execute_sql(cursor, "UPDATE quick_phrases SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (title, phrase_id))
+                if content is not None:
+                    self._execute_sql(cursor, "UPDATE quick_phrases SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (content, phrase_id))
+                if sort_order is not None:
+                    self._execute_sql(cursor, "UPDATE quick_phrases SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (sort_order, phrase_id))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"更新快捷短语失败: {e}")
+                return False
+
+    def delete_quick_phrase(self, phrase_id: int) -> bool:
+        """删除快捷短语"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, "DELETE FROM quick_phrases WHERE id = ?", (phrase_id,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"删除快捷短语失败: {e}")
+                return False
 
     # ==================== 卡券-商品关联操作 ====================
 

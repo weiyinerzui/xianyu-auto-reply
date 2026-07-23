@@ -56,6 +56,7 @@ const adminNavItems: NavItem[] = [
   { icon: FileText, label: '系统日志', path: '/admin/logs', adminOnly: true },
   { icon: Shield, label: '风控日志', path: '/admin/risk-logs', adminOnly: true },
   { icon: Database, label: '数据管理', path: '/admin/data', adminOnly: true },
+  { icon: FileText, label: '回复日志', path: '/admin/auto-reply-logs', adminOnly: true },
 ]
 
 const bottomNavItems: NavItem[] = [

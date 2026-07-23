@@ -18,6 +18,7 @@ import { MessageNotifications } from '@/pages/notifications/MessageNotifications
 import { Settings } from '@/pages/settings/Settings'
 import { MessageFilters } from '@/pages/filters/MessageFilters'
 import { QuickPhrases } from '@/pages/settings/QuickPhrases'
+import { AutoReplyLogs } from '@/pages/admin/AutoReplyLogs'
 import { ItemReplies } from '@/pages/item-replies/ItemReplies'
 import { ItemSearch } from '@/pages/search/ItemSearch'
 import { Users } from '@/pages/admin/Users'
@@ -172,6 +173,7 @@ function App() {
           <Route path="admin/logs" element={<Logs />} />
           <Route path="admin/risk-logs" element={<RiskLogs />} />
           <Route path="admin/data" element={<DataManagement />} />
+          <Route path="admin/auto-reply-logs" element={<AutoReplyLogs />} />
         </Route>
 
         {/* Catch all */}

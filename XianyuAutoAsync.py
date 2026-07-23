@@ -7784,6 +7784,17 @@ class XianyuLive:
     async def _process_chat_message_reply(self, message_data: dict, websocket, send_user_name: str,
                                          send_user_id: str, send_message: str, item_id: str,
                                          chat_id: str, msg_time: str, image_urls: list = None):
+        """自动回复处理 — 记录日志到 auto_reply_message_logs"""
+        _arlog_reply_strategy = 'none'
+        _arlog_matched_keyword = None
+        _arlog_reply_text = None
+        _arlog_send_status = 'unknown'
+        _arlog_error = None
+        _arlog_db = None
+        try:
+            from db_manager import db_manager as _arlog_db
+        except Exception:
+            pass
         """
         处理聊天消息的回复逻辑（从handle_message中提取出来的核心回复逻辑）
         
@@ -7821,6 +7832,9 @@ class XianyuLive:
                     msg_time, user_url, send_user_id, send_user_name,
                     item_id, send_message, chat_id
                 )
+                if reply:
+                    _arlog_reply_strategy = 'api'
+                    _arlog_reply_text = reply
                 if not reply:
                     logger.error(f"[{msg_time}] 【API调用失败】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): {send_message}")
 
@@ -7837,11 +7851,15 @@ class XianyuLive:
                     return
                 elif reply:
                     reply_source = '关键词'  # 标记为关键词回复
+                    _arlog_reply_strategy = 'keyword'
+                    _arlog_reply_text = reply
                 else:
                     # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
                     reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id, image_urls=image_urls)
                     if reply:
                         reply_source = 'AI'  # 标记为AI回复
+                        _arlog_reply_strategy = 'ai'
+                        _arlog_reply_text = reply
                     else:
                         # 3. 最后使用默认回复
                         default_reply_result = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
@@ -7853,6 +7871,8 @@ class XianyuLive:
                         # 处理默认回复（可能包含图片和文字）
                         if default_reply_result and isinstance(default_reply_result, dict):
                             reply_source = '默认'  # 标记为默认回复
+                            _arlog_reply_strategy = 'default'
+                            _arlog_reply_text = default_text or ''
                             default_image_url = default_reply_result.get('image_url')
                             default_text = default_reply_result.get('text')
                             
@@ -7939,6 +7959,7 @@ class XianyuLive:
                     # 发送图片消息
                     try:
                         await self.send_image_msg(websocket, chat_id, send_user_id, image_url)
+                        _arlog_send_status = 'success'
                         # 记录发出的图片消息
                         msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                         logger.info(f"[{msg_time}] 【{reply_source}图片发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): 图片 {image_url}")
@@ -7951,14 +7972,37 @@ class XianyuLive:
                 else:
                     # 普通文本消息
                     await self.send_msg(websocket, chat_id, send_user_id, reply)
+                    _arlog_send_status = 'success'
                     # 记录发出的消息
                     msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                     logger.info(f"[{msg_time}] 【{reply_source}发出】用户: {send_user_name} (ID: {send_user_id}), 商品({item_id}): {reply}")
             else:
+                _arlog_reply_strategy = 'none'
                 msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                 logger.info(f"[{msg_time}] 【{self.cookie_id}】【系统】未找到匹配的回复规则，不回复")
         except Exception as e:
             logger.error(f"处理聊天消息回复时发生错误: {self._safe_str(e)}")
+            _arlog_send_status = 'failed'
+            _arlog_error = str(e)[:500]
+        finally:
+            # 非阻塞写入自动回复日志
+            if _arlog_db:
+                try:
+                    _arlog_db.add_auto_reply_log(
+                        cookie_id=self.cookie_id,
+                        chat_id=chat_id,
+                        item_id=item_id,
+                        sender_user_id=send_user_id,
+                        sender_user_name=send_user_name,
+                        message_text=send_message[:500] if send_message else None,
+                        reply_strategy=_arlog_reply_strategy,
+                        matched_keyword=_arlog_matched_keyword,
+                        reply_text=_arlog_reply_text[:500] if _arlog_reply_text else None,
+                        send_status=_arlog_send_status,
+                        error_message=_arlog_error,
+                    )
+                except Exception:
+                    pass
 
     async def handle_message(self, message_data, websocket):
         """处理所有类型的消息"""
