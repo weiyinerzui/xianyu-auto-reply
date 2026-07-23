@@ -522,6 +522,21 @@ class DBManager:
             )
             ''')
 
+            # 创建定时任务配置表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_code TEXT UNIQUE NOT NULL,
+                task_name TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                enabled BOOLEAN DEFAULT TRUE,
+                description TEXT,
+                last_run_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
             # 创建消息通知配置表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS message_notifications (
@@ -583,6 +598,16 @@ class DBManager:
             ('smtp_use_tls', 'true', '是否启用TLS'),
             ('smtp_use_ssl', 'false', '是否启用SSL'),
             ('captcha.slider_mode', 'browser', '滑块滑动方式: browser=浏览器自动滑动, real_mouse=真实鼠标滑动')
+            ''')
+
+            # 插入默认定时任务配置
+            cursor.execute('''
+            INSERT OR IGNORE INTO scheduled_tasks (task_code, task_name, interval_seconds, enabled, description) VALUES
+            ('token_renewal', 'Token 续期', 3600, 1, 'Token 自动续期（默认1小时）'),
+            ('cookie_refresh', 'Cookie 刷新', 3600, 1, 'Cookie 自动刷新（默认1小时）'),
+            ('cleanup', '清理任务', 300, 1, '清理过期锁/缓存/日志（默认5分钟）'),
+            ('db_backup', '数据库备份', 86400, 1, 'SQLite 数据库备份（默认24小时）'),
+            ('delivery_timeout', '发货超时检测', 600, 1, '检测超时未发货订单（默认10分钟）')
             ''')
 
             # 检查并升级数据库
@@ -2773,6 +2798,78 @@ class DBManager:
             except Exception as e:
                 logger.error(f"获取所有系统设置失败: {e}")
                 return {}
+
+    # ==================== 定时任务配置操作 ====================
+
+    def get_all_scheduled_tasks(self) -> List[Dict]:
+        """获取所有定时任务配置"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, """SELECT id, task_code, task_name, interval_seconds,
+                    enabled, description, last_run_at, created_at, updated_at FROM scheduled_tasks
+                    ORDER BY id""")
+                cols = ['id', 'task_code', 'task_name', 'interval_seconds', 'enabled',
+                        'description', 'last_run_at', 'created_at', 'updated_at']
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"获取定时任务配置失败: {e}")
+                return []
+
+    def get_scheduled_task(self, task_code: str) -> Optional[Dict]:
+        """根据任务代码获取配置"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, """SELECT id, task_code, task_name, interval_seconds,
+                    enabled, description, last_run_at FROM scheduled_tasks WHERE task_code = ?""",
+                    (task_code,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                cols = ['id', 'task_code', 'task_name', 'interval_seconds', 'enabled',
+                        'description', 'last_run_at']
+                return dict(zip(cols, row))
+            except Exception as e:
+                logger.error(f"获取定时任务配置失败: {e}")
+                return None
+
+    def update_scheduled_task(self, task_code: str, *, interval_seconds: int = None,
+                              enabled: bool = None) -> bool:
+        """更新定时任务配置（间隔和/或启用状态）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if interval_seconds is not None:
+                    if interval_seconds < 1:
+                        raise ValueError("执行间隔不能小于1秒")
+                    self._execute_sql(cursor, """UPDATE scheduled_tasks SET interval_seconds = ?,
+                        updated_at = CURRENT_TIMESTAMP WHERE task_code = ?""",
+                        (interval_seconds, task_code))
+                if enabled is not None:
+                    self._execute_sql(cursor, """UPDATE scheduled_tasks SET enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP WHERE task_code = ?""",
+                        (1 if enabled else 0, task_code))
+                self.conn.commit()
+                logger.info(f"定时任务配置已更新: {task_code}, 间隔={interval_seconds}, 启用={enabled}")
+                return True
+            except Exception as e:
+                logger.error(f"更新定时任务配置失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def record_task_run(self, task_code: str) -> bool:
+        """更新任务最后执行时间"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(cursor, """UPDATE scheduled_tasks SET last_run_at = CURRENT_TIMESTAMP
+                    WHERE task_code = ?""", (task_code,))
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"更新定时任务执行时间失败: {e}")
+                return False
 
     # ==================== 记忆进化系统方法 ====================
 
