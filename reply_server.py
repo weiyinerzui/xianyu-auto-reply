@@ -379,6 +379,23 @@ async def _stop_memory_service():
     except Exception:
         pass
 
+# 启动全局定时任务运行器
+@app.on_event("startup")
+async def _start_global_scheduler():
+    try:
+        from utils.scheduler.global_runner import global_task_runner
+        await global_task_runner.start()
+    except Exception as e:
+        logger.warning(f"全局定时任务运行器启动失败（不影响主功能）: {e}")
+
+@app.on_event("shutdown")
+async def _stop_global_scheduler():
+    try:
+        from utils.scheduler.global_runner import global_task_runner
+        await global_task_runner.stop()
+    except Exception:
+        pass
+
 # 注册刮刮乐远程控制路由
 if CAPTCHA_ROUTER_AVAILABLE:
     app.include_router(captcha_router)
@@ -3066,6 +3083,62 @@ def update_system_setting(key: str, setting_data: SystemSettingIn, _: None = Dep
             raise HTTPException(status_code=400, detail='更新失败')
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------- 定时任务管理接口 -------------------------
+
+class ScheduledTaskUpdate(BaseModel):
+    interval_seconds: Optional[int] = None
+    enabled: Optional[bool] = None
+
+
+@app.get('/scheduled-tasks')
+def get_scheduled_tasks(_: None = Depends(require_auth)):
+    """获取所有定时任务配置"""
+    from db_manager import db_manager
+    try:
+        tasks = db_manager.get_all_scheduled_tasks()
+        for t in tasks:
+            t['enabled'] = bool(t.get('enabled'))
+        return {'tasks': tasks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put('/scheduled-tasks/{task_code}')
+def update_scheduled_task_config(task_code: str, data: ScheduledTaskUpdate, _: None = Depends(require_auth)):
+    """更新定时任务配置（间隔、启用状态）"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.update_scheduled_task(
+            task_code,
+            interval_seconds=data.interval_seconds,
+            enabled=data.enabled,
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail='更新失败')
+        from utils.scheduler.scheduled_task_service import scheduled_task_service
+        scheduled_task_service.reload(task_code)
+        return {'msg': 'scheduled task updated'}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/scheduled-tasks/{task_code}/trigger')
+async def trigger_scheduled_task(task_code: str, _: None = Depends(require_auth)):
+    """手动触发定时任务"""
+    try:
+        from utils.scheduler.global_runner import global_task_runner
+        if task_code in ('db_backup', 'delivery_timeout'):
+            result = await global_task_runner.trigger_task(task_code)
+            return {'success': True, 'message': result}
+        return {'success': False, 'message': f'任务 {task_code} 为实例级任务，无法手动触发'}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

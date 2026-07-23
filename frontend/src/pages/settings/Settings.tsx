@@ -7,6 +7,7 @@ import { useAuthStore } from '@/store/authStore'
 import { PageLoading, ButtonLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { SliderModeSetting } from './SliderModeSetting'
+import { ScheduledTasks } from './ScheduledTasks'
 import type { SystemSettings, Account } from '@/types'
 
 export function Settings() {
@@ -335,6 +336,8 @@ export function Settings() {
                       checked={Boolean(settings?.registration_enabled ?? false)}
                       onChange={(e) => setSettings(s => s ? { ...s, registration_enabled: e.target.checked } : null)}
                     />
+
+                <ScheduledTasks />
                     <span className="switch-slider"></span>
                   </label>
                 </div>

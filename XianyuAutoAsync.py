@@ -5453,6 +5453,16 @@ class XianyuLive:
         else:
             return obj
 
+    def _get_task_interval(self, task_code: str, default: int) -> int:
+        """从定时任务配置服务读取间隔（带默认值回退），任务禁用时返回极大值"""
+        try:
+            from utils.scheduler.scheduled_task_service import scheduled_task_service
+            if not scheduled_task_service.is_enabled(task_code):
+                return 10_000_000  # 禁用后基本不执行
+            return scheduled_task_service.get_interval(task_code)
+        except Exception:
+            return default
+
     async def token_refresh_loop(self):
         """Token刷新循环"""
         try:
@@ -5465,7 +5475,7 @@ class XianyuLive:
                         break
 
                     current_time = time.time()
-                    if current_time - self.last_token_refresh_time >= self.token_refresh_interval:
+                    if current_time - self.last_token_refresh_time >= self._get_task_interval('token_renewal', self.token_refresh_interval):
                         logger.info("Token即将过期，准备刷新...")
                         new_token = await self.refresh_token()
                         if new_token:
@@ -5842,8 +5852,9 @@ class XianyuLive:
                     except Exception as db_clean_e:
                         logger.error(f"【{self.cookie_id}】清理数据库历史数据时出错: {db_clean_e}")
 
-                    # 每5分钟清理一次
-                    await self._interruptible_sleep(300)
+                    # 清理间隔从DB读取（默认300秒）
+                    _cleanup_interval = self._get_task_interval('cleanup', 300)
+                    await self._interruptible_sleep(_cleanup_interval)
                 except asyncio.CancelledError:
                     # 收到取消信号，立即退出循环
                     logger.info(f"【{self.cookie_id}】清理循环收到取消信号，准备退出")
@@ -5883,7 +5894,7 @@ class XianyuLive:
                         continue
 
                     current_time = time.time()
-                    if current_time - self.last_cookie_refresh_time >= self.cookie_refresh_interval:
+                    if current_time - self.last_cookie_refresh_time >= self._get_task_interval('cookie_refresh', self.cookie_refresh_interval):
                         # 检查是否在消息接收后的冷却时间内
                         time_since_last_message = current_time - self.last_message_received_time
                         if time_since_last_message < self.message_cookie_refresh_cooldown:
