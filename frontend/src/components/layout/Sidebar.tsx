@@ -46,6 +46,8 @@ const mainNavItems: NavItem[] = [
   { icon: Bell, label: '通知渠道', path: '/notification-channels' },
   { icon: MessageCircle, label: '消息通知', path: '/message-notifications' },
   // { icon: Search, label: '商品搜索', path: '/item-search' },
+  { icon: Shield, label: '消息过滤', path: '/message-filters' },
+  { icon: MessageCircle, label: '快捷短语', path: '/quick-phrases' },
   { icon: Settings, label: '系统设置', path: '/settings' },
 ]
 

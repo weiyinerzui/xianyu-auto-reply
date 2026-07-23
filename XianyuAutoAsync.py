@@ -8051,6 +8051,33 @@ class XianyuLive:
             self.last_message_received_time = time.time()
             logger.warning(f"【{self.cookie_id}】收到消息，更新消息接收时间标识")
 
+            # 【消息过滤】检查消息是否被过滤规则屏蔽
+            try:
+                _filter_buyer_id = ''
+                _filter_item_id = ''
+                _filter_msg_text = ''
+                if 'buyer_id' in message:
+                    _filter_buyer_id = str(message.get('buyer_id', ''))
+                if 'item_id' in message:
+                    _filter_item_id = str(message.get('item_id', ''))
+                if 'content' in message and isinstance(message['content'], str):
+                    _filter_msg_text = message['content']
+                elif 'text' in message and isinstance(message['text'], str):
+                    _filter_msg_text = message['text']
+
+                # 获取 user_id
+                from db_manager import db_manager as _filter_db
+                _filter_cookie_info = _filter_db.get_cookie_by_id(self.cookie_id)
+                _filter_user_id = _filter_cookie_info.get('user_id') if _filter_cookie_info else None
+
+                _is_filtered, _filter_reason = _filter_db.check_message_filtered(
+                    _filter_buyer_id, _filter_msg_text, _filter_item_id, _filter_user_id)
+                if _is_filtered:
+                    logger.info(f"【{self.cookie_id}】消息已被过滤: {_filter_reason}，跳过处理")
+                    return
+            except Exception as _filter_e:
+                logger.debug(f"消息过滤检查异常（不影响正常流程）: {_filter_e}")
+
             # 【优先处理】尝试获取订单ID并获取订单详情
             order_id = None
             try:

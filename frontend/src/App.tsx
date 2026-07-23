@@ -16,6 +16,8 @@ import { Delivery } from '@/pages/delivery/Delivery'
 import { NotificationChannels } from '@/pages/notifications/NotificationChannels'
 import { MessageNotifications } from '@/pages/notifications/MessageNotifications'
 import { Settings } from '@/pages/settings/Settings'
+import { MessageFilters } from '@/pages/filters/MessageFilters'
+import { QuickPhrases } from '@/pages/settings/QuickPhrases'
 import { ItemReplies } from '@/pages/item-replies/ItemReplies'
 import { ItemSearch } from '@/pages/search/ItemSearch'
 import { Users } from '@/pages/admin/Users'
@@ -160,6 +162,8 @@ function App() {
           <Route path="message-notifications" element={<MessageNotifications />} />
           <Route path="item-search" element={<ItemSearch />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="message-filters" element={<MessageFilters />} />
+          <Route path="quick-phrases" element={<QuickPhrases />} />
           <Route path="disclaimer" element={<Disclaimer />} />
           <Route path="about" element={<About />} />
 

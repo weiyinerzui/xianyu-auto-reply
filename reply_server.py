@@ -3143,6 +3143,144 @@ async def trigger_scheduled_task(task_code: str, _: None = Depends(require_auth)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ------------------------- 消息过滤规则接口 -------------------------
+
+class MessageFilterIn(BaseModel):
+    filter_type: str  # buyer_id / keyword / item_id
+    filter_value: str
+    description: Optional[str] = None
+
+
+@app.get("/message-filters")
+def get_message_filters(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取消息过滤规则列表"""
+    from db_manager import db_manager
+    try:
+        user_id = current_user.get('user_id')
+        filters = db_manager.get_message_filters(user_id=user_id)
+        for f in filters:
+            f['enabled'] = bool(f.get('enabled'))
+        return {"filters": filters}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/message-filters")
+def create_message_filter(data: MessageFilterIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """添加消息过滤规则"""
+    from db_manager import db_manager
+    try:
+        if data.filter_type not in ('buyer_id', 'keyword', 'item_id'):
+            raise HTTPException(status_code=400, detail="filter_type 必须为 buyer_id/keyword/item_id")
+        user_id = current_user.get('user_id', 1)
+        filter_id = db_manager.add_message_filter(data.filter_type, data.filter_value.strip(), user_id, data.description)
+        if filter_id:
+            return {"id": filter_id, "msg": "过滤规则已添加"}
+        raise HTTPException(status_code=400, detail="添加失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/message-filters/{filter_id}")
+def update_message_filter_api(filter_id: int, data: dict, _: None = Depends(require_auth)):
+    """更新消息过滤规则（启用/禁用/修改值）"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.update_message_filter(filter_id,
+            enabled=data.get('enabled'), filter_value=data.get('filter_value'))
+        if success:
+            return {"msg": "更新成功"}
+        raise HTTPException(status_code=400, detail="更新失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/message-filters/{filter_id}")
+def delete_message_filter_api(filter_id: int, _: None = Depends(require_auth)):
+    """删除消息过滤规则"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.delete_message_filter(filter_id)
+        if success:
+            return {"msg": "删除成功"}
+        raise HTTPException(status_code=400, detail="删除失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------- 快捷短语接口 -------------------------
+
+class QuickPhraseIn(BaseModel):
+    title: str
+    content: str
+    sort_order: int = 0
+
+
+@app.get("/quick-phrases")
+def get_quick_phrases(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取快捷短语列表"""
+    from db_manager import db_manager
+    try:
+        user_id = current_user.get('user_id')
+        phrases = db_manager.get_quick_phrases(user_id=user_id)
+        return {"phrases": phrases}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/quick-phrases")
+def create_quick_phrase(data: QuickPhraseIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """添加快捷短语"""
+    from db_manager import db_manager
+    try:
+        user_id = current_user.get('user_id', 1)
+        phrase_id = db_manager.add_quick_phrase(data.title.strip(), data.content.strip(), data.sort_order, user_id)
+        if phrase_id:
+            return {"id": phrase_id, "msg": "快捷短语已添加"}
+        raise HTTPException(status_code=400, detail="添加失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/quick-phrases/{phrase_id}")
+def update_quick_phrase_api(phrase_id: int, data: QuickPhraseIn, _: None = Depends(require_auth)):
+    """更新快捷短语"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.update_quick_phrase(phrase_id,
+            title=data.title, content=data.content, sort_order=data.sort_order)
+        if success:
+            return {"msg": "更新成功"}
+        raise HTTPException(status_code=400, detail="更新失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/quick-phrases/{phrase_id}")
+def delete_quick_phrase_api(phrase_id: int, _: None = Depends(require_auth)):
+    """删除快捷短语"""
+    from db_manager import db_manager
+    try:
+        success = db_manager.delete_quick_phrase(phrase_id)
+        if success:
+            return {"msg": "删除成功"}
+        raise HTTPException(status_code=400, detail="删除失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------- 卡券-商品关联接口 -------------------------
 
 @app.get("/cards/{card_id}/relations")
