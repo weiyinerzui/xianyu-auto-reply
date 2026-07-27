@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent, ChangeEvent } from 'react'
-import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image, Package } from 'lucide-react'
+import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image } from 'lucide-react'
 import { getCards, deleteCard, createCard, updateCard, type CardData } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -801,6 +801,55 @@ export function Cards() {
                     </>
                   )}
                 </div>
+
+                {/* 关联商品 — 仅编辑模式显示 */}
+                {editingCardId && (
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                    <h3 className="font-medium text-gray-900 dark:text-white mb-3">关联商品</h3>
+                    <p className="text-xs text-gray-500 mb-3">为该卡券关联闲鱼商品ID，自动发货时优先按商品ID精确匹配</p>
+
+                    {/* 已关联列表 */}
+                    {relations.length > 0 && (
+                      <div className="space-y-1.5 mb-3">
+                        {relations.map((rel) => (
+                          <div key={rel.id} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded px-3 py-1.5">
+                            <code className="text-sm text-gray-700 dark:text-gray-300">{rel.item_id}</code>
+                            <button
+                              type="button"
+                              onClick={() => void handleRemoveRelation(rel.item_id)}
+                              disabled={relationLoading}
+                              className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                              title="删除关联"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 添加新关联 */}
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newItemId}
+                        onChange={(e) => setNewItemId(e.target.value)}
+                        placeholder="输入商品ID"
+                        className="input-ios flex-1"
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddRelation() } }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleAddRelation()}
+                        disabled={relationLoading || !newItemId.trim()}
+                        className="btn-ios-secondary shrink-0"
+                      >
+                        {relationLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                        添加
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="modal-footer sticky bottom-0 bg-white dark:bg-gray-900">

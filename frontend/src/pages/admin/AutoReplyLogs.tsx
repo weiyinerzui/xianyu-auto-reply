@@ -7,7 +7,7 @@
  * 3. 查看日志详情
  */
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, ChevronLeft, ChevronRight, Loader2, Filter } from 'lucide-react'
+import { FileText, ChevronLeft, ChevronRight, Filter } from 'lucide-react'
 import {
   getAutoReplyLogs,
   getAutoReplyLogStats,

@@ -8,7 +8,7 @@
  * 4. 时间范围切换（7天/14天/30天）
  */
 import { useState, useEffect, useCallback } from 'react'
-import { Brain, Loader2, Calendar } from 'lucide-react'
+import { Brain, Calendar } from 'lucide-react'
 import { getIntentStats, type IntentStats } from '@/api/intentStats'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'

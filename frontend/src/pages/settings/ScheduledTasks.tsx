@@ -95,13 +95,6 @@ export function ScheduledTasks() {
     }
   }
 
-  const formatInterval = (seconds: number) => {
-    if (seconds >= 86400) return `${Math.floor(seconds / 86400)} 天`
-    if (seconds >= 3600) return `${Math.floor(seconds / 3600)} 小时`
-    if (seconds >= 60) return `${Math.floor(seconds / 60)} 分钟`
-    return `${seconds} 秒`
-  }
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">

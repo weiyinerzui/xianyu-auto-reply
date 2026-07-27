@@ -22,6 +22,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   AlertTriangle,
+  Brain,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
