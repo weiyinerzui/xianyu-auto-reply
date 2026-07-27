@@ -13,8 +13,6 @@ import json
 import os
 import re
 import uvicorn
-import openpyxl
-from openpyxl.styles import PatternFill
 import io
 import asyncio
 from collections import defaultdict
@@ -3961,6 +3959,8 @@ def export_keywords(cid: str, current_user: Dict[str, Any] = Depends(get_current
                 })
 
         # 使用openpyxl创建Excel文件（替代pandas，节省~80MB内存）
+        import openpyxl
+        from openpyxl.styles import PatternFill
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = '关键词数据'
@@ -4031,6 +4031,7 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
 
     try:
         # 读取Excel文件（使用openpyxl替代pandas，节省~80MB内存）
+        import openpyxl
         contents = await file.read()
         try:
             wb = openpyxl.load_workbook(io.BytesIO(contents), read_only=True)
