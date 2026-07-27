@@ -18,5 +18,5 @@ export const getIntentStats = (
   const params: Record<string, string | number> = {}
   if (cookieId) params.cookie_id = cookieId
   if (days) params.days = days
-  return get('/intent-stats', params)
+  return get('/intent-stats', { params })
 }

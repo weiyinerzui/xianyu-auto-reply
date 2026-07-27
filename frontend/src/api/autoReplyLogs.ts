@@ -34,9 +34,9 @@ export const getAutoReplyLogs = (params: {
   limit?: number
   offset?: number
 }): Promise<{ logs: AutoReplyLog[] }> => {
-  return get('/auto-reply-logs', params)
+  return get('/auto-reply-logs', { params })
 }
 
 export const getAutoReplyLogStats = (cookieId?: string): Promise<{ stats: AutoReplyLogStats }> => {
-  return get('/auto-reply-logs/stats', cookieId ? { cookie_id: cookieId } : {})
+  return get('/auto-reply-logs/stats', cookieId ? { params: { cookie_id: cookieId } } : undefined)
 }
