@@ -1478,11 +1478,12 @@ class XianyuLive:
 
 
 
-    async def refresh_token(self, captcha_retry_count: int = 0):
+    async def refresh_token(self, captcha_retry_count: int = 0, token_expiry_retry_count: int = 0):
         """刷新token
 
         Args:
             captcha_retry_count: 滑块验证重试次数，用于防止无限递归
+            token_expiry_retry_count: 令牌过期重试次数（FAIL_SYS_TOKEN_EXOIRED/EXPIRED），用于防止无限重试
         """
         # 初始化通知发送标志，避免重复发送通知
         notification_sent = False
@@ -1853,7 +1854,7 @@ class XianyuLive:
                                         logger.error(f"【{self.cookie_id}】更新风控日志失败: {update_e}")
 
                                 # 重新尝试刷新token（递归调用，但有深度限制）
-                                return await self.refresh_token(captcha_retry_count + 1)
+                                return await self.refresh_token(captcha_retry_count + 1, token_expiry_retry_count)
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败（所有策略均失败）")
 
@@ -1893,13 +1894,13 @@ class XianyuLive:
                             
                             notification_sent = True
 
-                    # 检查是否包含"令牌过期"或"Session过期"
+                    # 检查是否包含"Session过期"（仅Session过期触发密码登录，令牌过期不触发）
                     if isinstance(res_json, dict):
                         res_json_str = json.dumps(res_json, ensure_ascii=False, separators=(',', ':'))
-                        if '令牌过期' in res_json_str or 'Session过期' in res_json_str:
-                            # 调用统一的密码登录刷新方法
-                            refresh_success = await self._try_password_login_refresh("令牌/Session过期")
-                            
+                        if 'Session过期' in res_json_str:
+                            # Session过期 → 触发密码登录刷新Cookie
+                            refresh_success = await self._try_password_login_refresh("Session过期")
+
                             if not refresh_success:
                                 # 标记已发送通知，避免重复通知
                                 notification_sent = True
@@ -1907,9 +1908,19 @@ class XianyuLive:
                                 return None
                             else:
                                 # 刷新成功后，重新尝试获取token
-                                return await self.refresh_token(captcha_retry_count)
-                                
-                                # 刷新失败时继续执行原有的失败处理逻辑
+                                return await self.refresh_token(captcha_retry_count + 1)
+
+                    # FAIL_SYS_TOKEN_EXOIRED/EXPIRED：令牌过期，允许自动重试一次（不触发密码登录）
+                    if isinstance(res_json, dict) and token_expiry_retry_count < 1:
+                        ret_value = res_json.get('ret', []) or []
+                        ret_str = json.dumps(ret_value, ensure_ascii=False)
+                        if 'FAIL_SYS_TOKEN_EXOIRED' in ret_str or 'FAIL_SYS_TOKEN_EXPIRED' in ret_str:
+                            logger.warning(f"【{self.cookie_id}】检测到令牌过期，准备重试一次（不触发密码登录）: {ret_value}")
+                            await asyncio.sleep(0.5)
+                            return await self.refresh_token(
+                                captcha_retry_count=captcha_retry_count,
+                                token_expiry_retry_count=token_expiry_retry_count + 1,
+                            )
 
                     logger.error(f"【{self.cookie_id}】Token刷新失败: {res_json}")
 
@@ -2093,38 +2104,41 @@ class XianyuLive:
                 if success:
                     logger.info(f"【{self.cookie_id}】滑块验证成功，获取到新的cookies")
 
-                    # 只提取x5sec相关的cookie值进行更新
-                    updated_cookies = self.cookies.copy()  # 复制现有cookies
+                    # 合并浏览器返回的所有cookie（不仅是x5sec，还包括_m_h5_tk等关键凭证）
+                    # 根因修复：之前只合并x5 cookie，导致_m_h5_tk仍是旧值→重试时FAIL_SYS_TOKEN_EXOIRED→误触发密码登录
+                    updated_cookies = self.cookies.copy()
                     new_cookie_count = 0
                     updated_cookie_count = 0
-                    x5sec_cookies = {}
+                    key_cookies_changed = []
+                    important_keys = ['_m_h5_tk', '_m_h5_tk_enc', 'x5sec', 'x5secdata', 'cookie2', 't', 'sgcookie', 'cna', 'unb']
 
-                    # 筛选出x5相关的cookies（包括x5sec, x5step等）
                     for cookie_name, cookie_value in cookies.items():
-                        cookie_name_lower = cookie_name.lower()
-                        if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
-                            x5sec_cookies[cookie_name] = cookie_value
-
-                    logger.info(f"【{self.cookie_id}】找到{len(x5sec_cookies)}个x5相关cookies: {list(x5sec_cookies.keys())}")
-
-                    # 只更新x5相关的cookies
-                    for cookie_name, cookie_value in x5sec_cookies.items():
+                        if not cookie_value:
+                            continue
                         if cookie_name in updated_cookies:
                             if updated_cookies[cookie_name] != cookie_value:
-                                logger.warning(f"【{self.cookie_id}】更新x5 cookie: {cookie_name}")
+                                logger.warning(f"【{self.cookie_id}】更新cookie: {cookie_name}")
                                 updated_cookies[cookie_name] = cookie_value
                                 updated_cookie_count += 1
+                                if cookie_name in important_keys:
+                                    key_cookies_changed.append(cookie_name)
                             else:
-                                logger.warning(f"【{self.cookie_id}】x5 cookie值未变: {cookie_name}")
+                                logger.debug(f"【{self.cookie_id}】cookie值未变: {cookie_name}")
                         else:
-                            logger.warning(f"【{self.cookie_id}】新增x5 cookie: {cookie_name}")
+                            logger.warning(f"【{self.cookie_id}】新增cookie: {cookie_name}")
                             updated_cookies[cookie_name] = cookie_value
                             new_cookie_count += 1
+                            if cookie_name in important_keys:
+                                key_cookies_changed.append(cookie_name)
+
+                    logger.info(f"【{self.cookie_id}】Cookie合并完成: 新增{new_cookie_count}个, 更新{updated_cookie_count}个, 总计{len(updated_cookies)}个")
+                    if key_cookies_changed:
+                        logger.info(f"【{self.cookie_id}】关键cookie已更新: {key_cookies_changed}")
+                    else:
+                        logger.warning(f"【{self.cookie_id}】⚠️ 未检测到关键cookie更新，可能_m_h5_tk仍为旧值")
 
                     # 将合并后的cookies字典转换为字符串格式
                     cookies_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items()])
-
-                    logger.info(f"【{self.cookie_id}】x5 Cookie更新完成: 新增{new_cookie_count}个, 更新{updated_cookie_count}个, 总计{len(updated_cookies)}个")
 
                     # 自动更新数据库中的cookie
                     try:
@@ -2141,10 +2155,10 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】滑块验证成功后，数据库cookies已自动更新")
 
                             
-                        # 记录成功更新到日志文件，包含x5相关的cookie信息
-                        x5sec_cookies_str = "; ".join([f"{k}={v}" for k, v in x5sec_cookies.items()]) if x5sec_cookies else "无"
+                        # 记录成功更新到日志文件，包含关键cookie信息
+                        changed_x5_str = "; ".join([f"{k}={v}" for k, v in updated_cookies.items() if 'x5' in k.lower()]) or "无"
                         log_captcha_event(self.cookie_id, "滑块验证成功并自动更新数据库", True,
-                            f"cookies长度: {len(cookies_str)}, 新增{new_cookie_count}个x5, 更新{updated_cookie_count}个x5, 总计{len(updated_cookies)}个cookie项, x5 cookies: {x5sec_cookies_str}")
+                            f"cookies长度: {len(cookies_str)}, 新增{new_cookie_count}个, 更新{updated_cookie_count}个, 总计{len(updated_cookies)}个cookie项, 关键cookie: {key_cookies_changed}, x5 cookies: {changed_x5_str}")
 
                         # 发送成功通知
                         await self.send_token_refresh_notification(
@@ -2160,9 +2174,9 @@ class XianyuLive:
                         self.cookies = old_cookies_dict
 
                         # 记录更新失败到日志文件，包含获取到的x5 cookies
-                        x5sec_cookies_str = "; ".join([f"{k}={v}" for k, v in x5sec_cookies.items()]) if x5sec_cookies else "无"
+                        failed_x5_str = "; ".join([f"{k}={v}" for k, v in (cookies or {}).items() if 'x5' in k.lower()]) or "无"
                         log_captcha_event(self.cookie_id, "滑块验证成功但数据库更新失败", False,
-                            f"更新异常: {self._safe_str(update_e)[:100]}, 获取到的x5 cookies: {x5sec_cookies_str}")
+                            f"更新异常: {self._safe_str(update_e)[:100]}, 获取到的x5 cookies: {failed_x5_str}")
 
                         # 发送更新失败通知
                         await self.send_token_refresh_notification(
