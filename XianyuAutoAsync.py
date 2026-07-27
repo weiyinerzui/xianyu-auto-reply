@@ -1504,6 +1504,23 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】最近{dedup_window}秒内已有成功的Token刷新结果，直接复用当前Token")
                 return self.current_token
 
+            # 2.5 Token缓存检查：数据库中有未过期缓存→直接复用（不发HTTP请求、不触发滑块）
+            if captcha_retry_count == 0 and self.myid:
+                try:
+                    from db_manager import db_manager
+                    cached = db_manager.get_cached_token(self.myid)
+                    if cached:
+                        self.current_token = cached['token']
+                        self.device_id = cached['device_id']
+                        self.last_token_refresh_time = time.time()
+                        self.last_token_refresh_status = "success_from_cache"
+                        logger.info(f"【{self.cookie_id}】使用数据库缓存的Token和Device ID")
+                        logger.info(f"【{self.cookie_id}】缓存Token: {cached['token']}")
+                        logger.info(f"【{self.cookie_id}】缓存Device ID: {cached['device_id']}")
+                        return self.current_token
+                except Exception as e:
+                    logger.warning(f"【{self.cookie_id}】读取Token缓存失败: {e}")
+
             # 3. 退避检查：处于风控退避期→跳过刷新
             if captcha_retry_count == 0 and self._should_skip_token_refresh_for_backoff():
                 # 检查是否需要触发账号保护
@@ -1714,6 +1731,13 @@ class XianyuLive:
                                 self.last_token_refresh_status = "success"
                                 # 清除风控退避状态（登录成功）
                                 XianyuLive.clear_password_login_failure_backoff(self.cookie_id)
+                                # 写入Token缓存（成功刷新后持久化，下次刷新可直接复用，跳过滑块）
+                                if self.myid:
+                                    try:
+                                        from db_manager import db_manager
+                                        db_manager.set_cached_token(self.myid, new_token, self.device_id)
+                                    except Exception as cache_e:
+                                        logger.warning(f"【{self.cookie_id}】写入Token缓存失败: {cache_e}")
                                 return new_token
 
                     # 检查是否需要滑块验证
@@ -1898,6 +1922,13 @@ class XianyuLive:
 
                     # 清空当前token，确保下次重试时重新获取
                     self.current_token = None
+                    # 删除Token缓存（token已失效，避免下次复用过期缓存）
+                    if self.myid:
+                        try:
+                            from db_manager import db_manager
+                            db_manager.delete_cached_token(self.myid)
+                        except Exception as cache_e:
+                            logger.warning(f"【{self.cookie_id}】删除Token缓存失败: {cache_e}")
 
                     # 只有在没有发送过通知的情况下才发送Token刷新失败通知
                     # 并且WebSocket未连接时才发送（已连接说明只是暂时失败）
@@ -1923,6 +1954,13 @@ class XianyuLive:
 
             # 清空当前token，确保下次重试时重新获取
             self.current_token = None
+            # 删除Token缓存（token已失效，避免下次复用过期缓存）
+            if self.myid:
+                try:
+                    from db_manager import db_manager
+                    db_manager.delete_cached_token(self.myid)
+                except Exception as cache_e:
+                    logger.warning(f"【{self.cookie_id}】删除Token缓存失败: {cache_e}")
 
             # 只有在没有发送过通知的情况下才发送Token刷新异常通知
             # 并且WebSocket未连接时才发送（已连接说明只是暂时失败）
