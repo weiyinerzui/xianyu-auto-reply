@@ -5096,6 +5096,7 @@ class XianyuLive:
                                 'card_id': card.get('id'),
                                 'card_name': card.get('name'),
                                 'card_type': card.get('type'),
+                                'keyword': item_id,
                                 'api_config': card.get('api_config'),
                                 'text_content': card.get('text_content'),
                                 'data_content': card.get('data_content'),
