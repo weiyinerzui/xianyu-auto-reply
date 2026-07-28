@@ -3340,12 +3340,86 @@ def delete_quick_phrase_api(phrase_id: int, _: None = Depends(require_auth)):
 
 @app.get("/cards/{card_id}/relations")
 def get_card_relations(card_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """获取卡券关联的商品列表"""
+    """获取卡券关联的商品列表（附带商品标题）"""
     from db_manager import db_manager
     try:
         relations = db_manager.get_card_item_relations(card_id=card_id)
+        # 批量查询商品标题，供前端展示
+        if relations:
+            item_ids = [r['item_id'] for r in relations]
+            placeholders = ','.join('?' * len(item_ids))
+            with db_manager.lock:
+                cursor = db_manager.conn.cursor()
+                db_manager._execute_sql(
+                    cursor,
+                    f"SELECT item_id, item_title, item_price FROM item_info WHERE item_id IN ({placeholders})",
+                    tuple(item_ids),
+                )
+                title_map = {row[0]: {'title': row[1], 'price': row[2]} for row in cursor.fetchall()}
+            for rel in relations:
+                info = title_map.get(rel['item_id'])
+                rel['item_title'] = info['title'] if info else None
+                rel['item_price'] = info['price'] if info else None
         return {"relations": relations}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cards/search-items")
+def search_items_for_card(
+    keyword: str = "",
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """搜索当前用户的商品，供卡券关联商品选择。
+
+    支持按商品ID或标题模糊匹配，仅返回当前用户账号下的商品。
+    """
+    from db_manager import db_manager
+    try:
+        user_id = current_user.get('user_id', 1)
+        # 获取当前用户的所有 cookie_id
+        user_cookies = db_manager.get_all_cookies(user_id)
+        cookie_ids = list(user_cookies.keys())
+        if not cookie_ids:
+            return {"items": [], "total": 0}
+
+        kw = f"%{keyword.strip()}%" if keyword.strip() else None
+        with db_manager.lock:
+            cursor = db_manager.conn.cursor()
+            if kw:
+                cookie_ph = ','.join('?' * len(cookie_ids))
+                db_manager._execute_sql(
+                    cursor,
+                    f"""SELECT item_id, item_title, item_price
+                        FROM item_info
+                        WHERE cookie_id IN ({cookie_ph})
+                          AND (item_id LIKE ? OR item_title LIKE ?)
+                        ORDER BY updated_at DESC
+                        LIMIT 100""",
+                    tuple(cookie_ids) + (kw, kw),
+                )
+            else:
+                cookie_ph = ','.join('?' * len(cookie_ids))
+                db_manager._execute_sql(
+                    cursor,
+                    f"""SELECT item_id, item_title, item_price
+                        FROM item_info
+                        WHERE cookie_id IN ({cookie_ph})
+                        ORDER BY updated_at DESC
+                        LIMIT 100""",
+                    tuple(cookie_ids),
+                )
+            items = [
+                {
+                    'item_id': row[0],
+                    'item_title': row[1] or '未知商品',
+                    'item_price': row[2] or '',
+                }
+                for row in cursor.fetchall()
+            ]
+        return {"items": items, "total": len(items)}
+    except Exception as e:
+        logger.error(f"搜索卡券关联商品失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -5634,7 +5708,7 @@ async def clear_logs(_: None = Depends(require_auth)):
 # ==================== 商品管理API ====================
 
 @app.post("/items/get-all-from-account")
-async def get_all_items_from_account(request: dict, _: None = Depends(require_auth)):
+async def get_all_items_from_account(request: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """从指定账号获取所有商品信息"""
     try:
         cookie_id = request.get('cookie_id')
@@ -5650,9 +5724,9 @@ async def get_all_items_from_account(request: dict, _: None = Depends(require_au
         if not cookies_str:
             return {"success": False, "message": "账号cookie信息为空"}
 
-        # 创建XianyuLive实例，传入正确的cookie_id
+        # 创建XianyuLive实例，传入正确的cookie_id和user_id
         from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+        xianyu_instance = XianyuLive(cookies_str, cookie_id, user_id=current_user['user_id'])
 
         try:
             # 调用获取所有商品信息的方法（自动分页）
@@ -5685,7 +5759,7 @@ async def get_all_items_from_account(request: dict, _: None = Depends(require_au
 
 
 @app.post("/items/get-by-page")
-async def get_items_by_page(request: dict, _: None = Depends(require_auth)):
+async def get_items_by_page(request: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
     """从指定账号按页获取商品信息"""
     try:
         # 验证参数
@@ -5718,9 +5792,9 @@ async def get_items_by_page(request: dict, _: None = Depends(require_auth)):
         if not cookies_str:
             return {"success": False, "message": "账号cookies为空"}
 
-        # 创建XianyuLive实例，传入正确的cookie_id
+        # 创建XianyuLive实例，传入正确的cookie_id和user_id
         from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+        xianyu_instance = XianyuLive(cookies_str, cookie_id, user_id=current_user['user_id'])
 
         try:
             # 调用获取指定页商品信息的方法

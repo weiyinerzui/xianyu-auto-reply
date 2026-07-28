@@ -494,6 +494,10 @@ class DBManager:
                 self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
 
+            # 创建索引：加速卡券关联商品搜索（cookie_id 过滤 + item_id/item_title 模糊匹配）
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_item_info_cookie_id ON item_info(cookie_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_item_info_item_id ON item_info(item_id)')
+
             # 创建自动发货规则表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS delivery_rules (

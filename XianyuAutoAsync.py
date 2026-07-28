@@ -4977,6 +4977,11 @@ class XianyuLive:
         try:
             from db_manager import db_manager
 
+            # 提取用户ID，用于卡券-商品关联表和关键词规则的查询过滤
+            user_id = getattr(self, 'user_id', None) or 1
+            if not getattr(self, 'user_id', None):
+                logger.warning(f"【{self.cookie_id}】user_id 未传入，自动发货将使用默认用户 1，可能导致多用户数据混乱")
+
             logger.info(f"开始自动发货检查: 商品ID={item_id}")
 
             # 获取商品详细信息

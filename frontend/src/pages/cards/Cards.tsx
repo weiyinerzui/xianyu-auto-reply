@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent, ChangeEvent } from 'react'
-import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image } from 'lucide-react'
+import { Ticket, RefreshCw, Plus, Trash2, X, Loader2, Power, PowerOff, Edit2, Image, Search } from 'lucide-react'
 import { getCards, deleteCard, createCard, updateCard, type CardData } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
 import { Select } from '@/components/common/Select'
 import { post } from '@/utils/request'
-import { getCardRelations, addCardRelation, removeCardRelation, type CardItemRelation } from '@/api/cardRelations'
+import { getCardRelations, addCardRelation, removeCardRelation, searchItemsForCard, type CardItemRelation } from '@/api/cardRelations'
 
 type ModalType = 'add' | 'edit' | null
 
@@ -119,6 +119,14 @@ export function Cards() {
   const [relations, setRelations] = useState<CardItemRelation[]>([])
   const [newItemId, setNewItemId] = useState('')
   const [relationLoading, setRelationLoading] = useState(false)
+
+  // 商品搜索状态（关联商品时按标题/ID搜索选择）
+  const [itemSearchKeyword, setItemSearchKeyword] = useState('')
+  const [itemSearchResults, setItemSearchResults] = useState<Array<{ item_id: string; item_title: string; item_price: string }>>([])
+  const [itemSearchLoading, setItemSearchLoading] = useState(false)
+  const [showItemSearchDropdown, setShowItemSearchDropdown] = useState(false)
+  const itemSearchRef = useRef<HTMLDivElement>(null)
+  const itemSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const loadCards = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -238,6 +246,64 @@ export function Cards() {
       addToast({ type: 'error', message: '删除失败' })
     }
   }
+
+  // 防抖搜索商品（按ID或标题模糊匹配，空关键词返回全部）
+  const handleItemSearch = (keyword: string) => {
+    setItemSearchKeyword(keyword)
+    if (itemSearchTimer.current) clearTimeout(itemSearchTimer.current)
+    setItemSearchLoading(true)
+    itemSearchTimer.current = setTimeout(async () => {
+      try {
+        const result = await searchItemsForCard(keyword)
+        setItemSearchResults(result.items)
+        setShowItemSearchDropdown(result.items.length > 0)
+      } catch {
+        setItemSearchResults([])
+        setShowItemSearchDropdown(false)
+      } finally {
+        setItemSearchLoading(false)
+      }
+    }, 300)
+  }
+
+  // 搜索框获得焦点时，加载全部商品列表
+  const handleItemSearchFocus = () => {
+    // 有结果时直接展开下拉，无结果时才请求，避免重复 API 调用
+    if (itemSearchResults.length > 0) {
+      setShowItemSearchDropdown(true)
+    } else {
+      handleItemSearch('')
+    }
+  }
+
+  // 选择搜索到的商品并添加关联
+  const handleSelectSearchItem = async (item: { item_id: string; item_title: string; item_price: string }) => {
+    if (!editingCardId) return
+    setRelationLoading(true)
+    try {
+      await addCardRelation(editingCardId, item.item_id)
+      addToast({ type: 'success', message: `已关联: ${item.item_title || item.item_id}` })
+      setItemSearchKeyword('')
+      setItemSearchResults([])
+      setShowItemSearchDropdown(false)
+      await loadRelations(editingCardId)
+    } catch {
+      addToast({ type: 'error', message: '关联添加失败' })
+    } finally {
+      setRelationLoading(false)
+    }
+  }
+
+  // 点击外部关闭搜索下拉
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (itemSearchRef.current && !itemSearchRef.current.contains(e.target as Node)) {
+        setShowItemSearchDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   const updateFormField = <K extends keyof CardFormData>(field: K, value: CardFormData[K]) => {
     setFormData(prev => ({ ...prev, [field]: value }))
@@ -806,19 +872,24 @@ export function Cards() {
                 {editingCardId && (
                   <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
                     <h3 className="font-medium text-gray-900 dark:text-white mb-3">关联商品</h3>
-                    <p className="text-xs text-gray-500 mb-3">为该卡券关联闲鱼商品ID，自动发货时优先按商品ID精确匹配</p>
+                    <p className="text-xs text-gray-500 mb-3">为该卡券关联闲鱼商品，自动发货时优先按商品ID精确匹配</p>
 
                     {/* 已关联列表 */}
                     {relations.length > 0 && (
                       <div className="space-y-1.5 mb-3">
                         {relations.map((rel) => (
                           <div key={rel.id} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded px-3 py-1.5">
-                            <code className="text-sm text-gray-700 dark:text-gray-300">{rel.item_id}</code>
+                            <div className="flex-1 min-w-0">
+                              <code className="text-sm text-gray-700 dark:text-gray-300">{rel.item_id}</code>
+                              {rel.item_title && (
+                                <p className="text-xs text-gray-500 truncate">{rel.item_title}</p>
+                              )}
+                            </div>
                             <button
                               type="button"
                               onClick={() => void handleRemoveRelation(rel.item_id)}
                               disabled={relationLoading}
-                              className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                              className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors ml-2"
                               title="删除关联"
                             >
                               <Trash2 className="w-3.5 h-3.5 text-red-500" />
@@ -828,13 +899,53 @@ export function Cards() {
                       </div>
                     )}
 
-                    {/* 添加新关联 */}
+                    {/* 商品搜索（按ID或标题搜索） */}
+                    <div className="relative mb-3" ref={itemSearchRef}>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                        <input
+                          type="text"
+                          value={itemSearchKeyword}
+                          onChange={(e) => handleItemSearch(e.target.value)}
+                          onFocus={handleItemSearchFocus}
+                          placeholder="搜索商品ID或标题..."
+                          className="input-ios w-full pl-9"
+                          disabled={relationLoading}
+                        />
+                        {itemSearchLoading && (
+                          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-gray-400" />
+                        )}
+                      </div>
+
+                      {/* 搜索结果下拉 */}
+                      {showItemSearchDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-60 overflow-auto">
+                          {itemSearchResults.map((item) => (
+                            <button
+                              key={item.item_id}
+                              type="button"
+                              onClick={() => void handleSelectSearchItem(item)}
+                              disabled={relationLoading}
+                              className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors border-b border-gray-100 dark:border-gray-700 last:border-b-0"
+                            >
+                              <div className="text-sm text-gray-900 dark:text-white">{item.item_title || item.item_id}</div>
+                              <div className="text-xs text-gray-500 mt-0.5">
+                                ID: {item.item_id}
+                                {item.item_price && ` · ¥${item.item_price}`}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 手动输入商品ID（保留原有方式） */}
                     <div className="flex gap-2">
                       <input
                         type="text"
                         value={newItemId}
                         onChange={(e) => setNewItemId(e.target.value)}
-                        placeholder="输入商品ID"
+                        placeholder="或直接输入商品ID"
                         className="input-ios flex-1"
                         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddRelation() } }}
                       />
