@@ -4867,8 +4867,169 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】免拼发货模块调用失败: {self._safe_str(e)}")
             return {"error": f"免拼发货模块调用失败: {self._safe_str(e)}", "order_id": order_id}
 
+    async def _fetch_order_detail_from_api(self, order_id: str, retry_count: int = 0) -> dict:
+        """通过mtop API获取订单详情（参照上游项目，替代浏览器CSS选择器抓取）
+
+        Args:
+            order_id: 订单号
+            retry_count: 当前重试次数
+
+        Returns:
+            订单详情字典，包含spec_name, spec_value, amount, quantity等；失败返回None
+        """
+        max_retry = 3
+
+        if not self.cookies_str:
+            logger.warning(f"【{self.cookie_id}】订单 {order_id} API获取失败：未提供Cookie")
+            return None
+
+        try:
+            cookies = trans_cookies(self.cookies_str)
+            timestamp = str(int(time.time() * 1000))
+            data_val = json.dumps({"tid": order_id}, separators=(',', ':'))
+
+            # 从Cookie中获取token用于签名
+            token = cookies.get('_m_h5_tk', '').split('_')[0] if cookies.get('_m_h5_tk') else ''
+            if not token:
+                logger.warning(f"【{self.cookie_id}】订单 {order_id} Cookie中未找到_m_h5_tk token")
+
+            sign = generate_sign(timestamp, token, data_val)
+
+            params = {
+                'jsv': '2.7.2',
+                'appKey': '34839810',
+                't': timestamp,
+                'sign': sign,
+                'v': '1.0',
+                'type': 'originaljson',
+                'accountSite': 'xianyu',
+                'dataType': 'json',
+                'timeout': '20000',
+                'api': 'mtop.idle.web.trade.order.detail',
+                'sessionOption': 'AutoLoginOnly',
+                'spm_cnt': 'a21ybx.order-detail.0.0',
+            }
+
+            headers = {
+                'accept': 'application/json',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'content-type': 'application/x-www-form-urlencoded',
+                'origin': 'https://www.goofish.com',
+                'referer': 'https://www.goofish.com/',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36',
+                'cookie': self.cookies_str.replace('\n', '').replace('\r', '') if self.cookies_str else '',
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://h5api.m.goofish.com/h5/mtop.idle.web.trade.order.detail/1.0/',
+                    params=params,
+                    data={'data': data_val},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=20)
+                ) as response:
+                    res_json = await response.json()
+
+                    # 处理响应中的set-cookie，更新本地cookie
+                    if 'set-cookie' in response.headers:
+                        new_cookies = {}
+                        for cookie in response.headers.getall('set-cookie', []):
+                            if '=' in cookie:
+                                name, value = cookie.split(';')[0].split('=', 1)
+                                new_cookies[name.strip()] = value.strip()
+                        if new_cookies:
+                            self.cookies.update(new_cookies)
+                            self.cookies_str = '; '.join(f'{k}={v}' for k, v in self.cookies.items())
+
+                    # 检查响应是否成功
+                    ret_list = res_json.get('ret', [])
+                    logger.info(f"【{self.cookie_id}】订单 {order_id} API响应: ret={ret_list}")
+
+                    if not any('SUCCESS' in ret for ret in ret_list):
+                        logger.warning(f"【{self.cookie_id}】订单 {order_id} API调用失败: {ret_list}")
+                        if retry_count < max_retry - 1:
+                            logger.info(f"【{self.cookie_id}】订单 {order_id} API请求失败，准备重试({retry_count + 1}/{max_retry - 1})...")
+                            await asyncio.sleep(0.5)
+                            return await self._fetch_order_detail_from_api(order_id, retry_count + 1)
+                        return None
+
+                    # 解析返回数据
+                    return self._parse_order_detail_response(order_id, res_json)
+
+        except asyncio.TimeoutError:
+            logger.warning(f"【{self.cookie_id}】订单 {order_id} API请求超时（第{retry_count + 1}次）")
+            if retry_count < max_retry - 1:
+                await asyncio.sleep(0.5)
+                return await self._fetch_order_detail_from_api(order_id, retry_count + 1)
+            return None
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】订单 {order_id} API请求异常（第{retry_count + 1}次）: {self._safe_str(e)}")
+            if retry_count < max_retry - 1:
+                await asyncio.sleep(0.5)
+                return await self._fetch_order_detail_from_api(order_id, retry_count + 1)
+            return None
+
+    def _parse_order_detail_response(self, order_id: str, res_json: dict) -> dict:
+        """解析mtop API返回的订单详情数据
+
+        Args:
+            order_id: 订单号
+            res_json: API返回的JSON数据
+
+        Returns:
+            解析后的订单详情字典，包含spec_name, spec_value, amount, quantity等
+        """
+        try:
+            data = res_json.get('data', {})
+            components = data.get('components', [])
+
+            result = {
+                'spec_name': '',
+                'spec_value': '',
+                'quantity': '1',
+                'amount': '',
+            }
+
+            for component in components:
+                render_type = component.get('render', '')
+                comp_data = component.get('data', {})
+
+                # 解析订单信息（包含商品信息）
+                if render_type == 'orderInfoVO':
+                    item_info = comp_data.get('itemInfo', {})
+
+                    # 获取数量
+                    buy_amount = item_info.get('buyAmount', '1')
+                    result['quantity'] = str(buy_amount)
+
+                    # 获取价格
+                    price = item_info.get('price', '')
+                    if price:
+                        result['amount'] = str(price)
+
+                    # 获取规格信息（格式：规格名:规格值）
+                    sku_info = item_info.get('skuInfo', '')
+                    if sku_info and ':' in sku_info:
+                        parts = sku_info.split(':', 1)
+                        result['spec_name'] = parts[0].strip()
+                        result['spec_value'] = parts[1].strip() if len(parts) > 1 else ''
+
+                    logger.info(f"【{self.cookie_id}】订单 {order_id} 解析商品信息: 价格={result['amount']}, 数量={result['quantity']}, 规格={sku_info}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】订单 {order_id} 解析API响应失败: {self._safe_str(e)}")
+            return None
+
     async def fetch_order_detail_info(self, order_id: str, item_id: str = None, buyer_id: str = None, debug_headless: bool = None):
-        """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）"""
+        """获取订单详情信息（使用独立的锁机制，不受延迟锁影响）
+
+        获取逻辑（参照上游项目）：
+        1. 先检查数据库缓存，以规格信息（spec_name+spec_value）为有效标准
+        2. 数据库无规格信息则通过mtop API获取
+        3. API失败则回退到浏览器获取（兜底）
+        """
         # 使用独立的订单详情锁，不与自动发货锁冲突
         order_detail_lock = self._get_order_detail_lock(order_id)
 
@@ -4878,31 +5039,86 @@ class XianyuLive:
             try:
                 logger.info(f"【{self.cookie_id}】开始获取订单详情: {order_id}")
 
-                # 导入订单详情获取器
-                from utils.order_detail_fetcher import fetch_order_detail_simple
                 from db_manager import db_manager
+                from utils.order_detail_fetcher import fetch_order_detail_simple
 
-                # 获取当前账号的cookie字符串
-                cookie_string = self.cookies_str
-                logger.warning(f"【{self.cookie_id}】使用Cookie长度: {len(cookie_string) if cookie_string else 0}")
+                spec_name = ''
+                spec_value = ''
+                quantity = ''
+                amount = ''
+                result = None
 
-                # 确定是否使用有头模式（调试用）
-                headless_mode = True if debug_headless is None else debug_headless
-                if not headless_mode:
-                    logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
+                # ==================== 第一步：检查数据库缓存（以规格信息为有效标准，参照上游项目） ====================
+                existing_order = db_manager.get_order_by_id(order_id)
+                if existing_order:
+                    spec_name = existing_order.get('spec_name', '') or ''
+                    spec_value = existing_order.get('spec_value', '') or ''
+                    quantity = existing_order.get('quantity', '') or '1'
+                    amount = existing_order.get('amount', '') or ''
 
-                # 异步获取订单详情（使用当前账号的cookie）
-                result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+                    # 以规格信息为有效标准（不再依赖金额，避免CSS选择器失效导致死循环）
+                    if spec_name and spec_value:
+                        logger.info(f"【{self.cookie_id}】📋 订单 {order_id} 数据库缓存有效（规格={spec_name}={spec_value}），跳过获取")
+                        result = {
+                            'order_id': order_id,
+                            'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
+                            'title': f"订单详情 - {order_id}",
+                            'sku_info': {'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount},
+                            'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount,
+                            'timestamp': time.time(), 'from_cache': True,
+                        }
 
+                # ==================== 第二步：数据库无规格信息，通过mtop API获取 ====================
+                if not result:
+                    logger.info(f"【{self.cookie_id}】订单 {order_id} 数据库无规格信息，尝试通过API获取...")
+                    api_result = await self._fetch_order_detail_from_api(order_id)
+
+                    if api_result:
+                        logger.info(f"【{self.cookie_id}】✅ 订单 {order_id} API获取成功")
+                        spec_name = api_result.get('spec_name', '') or ''
+                        spec_value = api_result.get('spec_value', '') or ''
+                        quantity = api_result.get('quantity', '') or '1'
+                        amount = api_result.get('amount', '') or ''
+                        result = {
+                            'order_id': order_id,
+                            'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
+                            'title': f"订单详情 - {order_id}",
+                            'sku_info': {'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount},
+                            'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount,
+                            'timestamp': time.time(), 'from_cache': False, 'from_api': True,
+                        }
+                    else:
+                        logger.warning(f"【{self.cookie_id}】订单 {order_id} API获取失败，回退到浏览器获取...")
+
+                # ==================== 第三步：API失败，回退到浏览器获取（兜底） ====================
+                if not result:
+                    cookie_string = self.cookies_str
+                    logger.warning(f"【{self.cookie_id}】使用Cookie长度: {len(cookie_string) if cookie_string else 0}")
+
+                    headless_mode = True if debug_headless is None else debug_headless
+                    if not headless_mode:
+                        logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
+
+                    browser_result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+
+                    if browser_result:
+                        logger.info(f"【{self.cookie_id}】订单详情浏览器获取成功: {order_id}")
+                        spec_name = browser_result.get('spec_name', '') or ''
+                        spec_value = browser_result.get('spec_value', '') or ''
+                        quantity = browser_result.get('quantity', '') or '1'
+                        amount = browser_result.get('amount', '') or ''
+                        result = {
+                            'order_id': order_id,
+                            'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
+                            'title': browser_result.get('title', f"订单详情 - {order_id}"),
+                            'sku_info': {'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount},
+                            'spec_name': spec_name, 'spec_value': spec_value, 'quantity': quantity, 'amount': amount,
+                            'timestamp': time.time(), 'from_cache': False, 'from_browser': True,
+                        }
+
+                # ==================== 第四步：保存到数据库 + 调用订单状态处理器 ====================
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
-                    logger.info(f"【{self.cookie_id}】页面标题: {result.get('title', '未知')}")
-
-                    # 获取解析后的规格信息
-                    spec_name = result.get('spec_name', '')
-                    spec_value = result.get('spec_value', '')
-                    quantity = result.get('quantity', '')
-                    amount = result.get('amount', '')
 
                     if spec_name and spec_value:
                         logger.info(f"【{self.cookie_id}】📋 规格名称: {spec_name}")
@@ -4914,36 +5130,25 @@ class XianyuLive:
 
                     # 插入或更新订单信息到数据库
                     try:
-                        # 检查cookie_id是否在cookies表中存在
                         cookie_info = db_manager.get_cookie_by_id(self.cookie_id)
                         if not cookie_info:
                             logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
                         else:
-                            # 先保存订单基本信息
                             success = db_manager.insert_or_update_order(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=buyer_id,
-                                spec_name=spec_name,
-                                spec_value=spec_value,
-                                quantity=quantity,
-                                amount=amount,
-                                cookie_id=self.cookie_id
+                                order_id=order_id, item_id=item_id, buyer_id=buyer_id,
+                                spec_name=spec_name, spec_value=spec_value,
+                                quantity=quantity, amount=amount, cookie_id=self.cookie_id
                             )
-                            
-                            # 使用订单状态处理器设置状态
+
                             logger.info(f"【{self.cookie_id}】检查订单状态处理器调用条件: success={success}, handler_exists={self.order_status_handler is not None}")
                             if success and self.order_status_handler:
                                 logger.info(f"【{self.cookie_id}】准备调用订单状态处理器.handle_order_detail_fetched_status: {order_id}")
                                 try:
                                     handler_result = self.order_status_handler.handle_order_detail_fetched_status(
-                                        order_id=order_id,
-                                        cookie_id=self.cookie_id,
-                                        context="订单详情已拉取"
+                                        order_id=order_id, cookie_id=self.cookie_id, context="订单详情已拉取"
                                     )
                                     logger.info(f"【{self.cookie_id}】订单状态处理器.handle_order_detail_fetched_status返回结果: {handler_result}")
-                                    
-                                    # 处理待处理队列
+
                                     logger.info(f"【{self.cookie_id}】准备调用订单状态处理器.on_order_details_fetched: {order_id}")
                                     self.order_status_handler.on_order_details_fetched(order_id)
                                     logger.info(f"【{self.cookie_id}】订单状态处理器.on_order_details_fetched调用成功: {order_id}")
