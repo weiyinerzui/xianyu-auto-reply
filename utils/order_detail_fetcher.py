@@ -15,6 +15,10 @@ import json
 from threading import Lock
 from collections import defaultdict
 
+# 订单详情浏览器获取冷却：防止选择器失效时反复启动浏览器
+_browser_fetch_cooldowns: dict = {}  # order_id -> last browser fetch timestamp
+_BROWSER_FETCH_COOLDOWN_SECONDS = 300  # 5分钟冷却
+
 # 修复Docker环境中的asyncio事件循环策略问题
 if sys.platform.startswith('linux') or os.getenv('DOCKER_ENV'):
     try:
@@ -715,6 +719,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
         失败时返回None
     """
     # 先检查数据库中是否有有效数据
+    existing_order = None
     try:
         from db_manager import db_manager
         existing_order = db_manager.get_order_by_id(order_id)
@@ -761,6 +766,37 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
                 print(f"⚠️ 订单 {order_id} 金额无效，重新获取详情...")
     except Exception as e:
         logger.warning(f"检查数据库缓存失败: {e}")
+
+    # 冷却检查：防止选择器失效时反复启动浏览器
+    now = time.time()
+    last_fetch = _browser_fetch_cooldowns.get(order_id, 0)
+    if now - last_fetch < _BROWSER_FETCH_COOLDOWN_SECONDS:
+        remaining = int(_BROWSER_FETCH_COOLDOWN_SECONDS - (now - last_fetch))
+        logger.warning(f"⚠️ 订单 {order_id} 浏览器获取冷却中，还剩 {remaining} 秒，跳过重复获取")
+        # 返回数据库中的现有数据（即使金额无效），避免阻塞流程
+        result = {
+            'order_id': order_id,
+            'url': f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller",
+            'title': f"订单详情 - {order_id}",
+            'sku_info': {
+                'spec_name': existing_order.get('spec_name', '') if existing_order else '',
+                'spec_value': existing_order.get('spec_value', '') if existing_order else '',
+                'quantity': existing_order.get('quantity', '') if existing_order else '',
+                'amount': existing_order.get('amount', '') if existing_order else '',
+            },
+            'spec_name': existing_order.get('spec_name', '') if existing_order else '',
+            'spec_value': existing_order.get('spec_value', '') if existing_order else '',
+            'quantity': existing_order.get('quantity', '') if existing_order else '',
+            'amount': existing_order.get('amount', '') if existing_order else '',
+            'order_status': existing_order.get('order_status', 'unknown') if existing_order else 'unknown',
+            'timestamp': time.time(),
+            'from_cache': True,
+            'cooldown_skipped': True,
+        }
+        return result
+
+    # 更新冷却时间戳
+    _browser_fetch_cooldowns[order_id] = now
 
     # 数据库中没有有效数据，使用浏览器获取
     logger.info(f"🌐 订单 {order_id} 需要浏览器获取，开始初始化浏览器...")
