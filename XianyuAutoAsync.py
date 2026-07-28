@@ -5746,7 +5746,41 @@ class XianyuLive:
             }
         }
         await ws.send(json.dumps(msg))
-        await asyncio.sleep(1)
+
+        # 修复1：等待并校验注册响应（之前完全不检查注册是否成功，导致"假连接"）
+        try:
+            reg_response_raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            reg_response_size = len(reg_response_raw) if reg_response_raw else 0
+            reg_data = json.loads(reg_response_raw)
+            reg_code = reg_data.get("code")
+
+            if reg_code != 200:
+                # 注册失败：服务器拒绝了注册请求
+                logger.error(f"【{self.cookie_id}】❌ WebSocket注册失败! code={reg_code}, 响应大小={reg_response_size}字节")
+                logger.error(f"【{self.cookie_id}】注册失败响应内容: {reg_response_raw[:500]}")
+
+                # Q1确认：清除缓存的Token（可能已被服务器标记为异常或失效）
+                try:
+                    from db_manager import db_manager
+                    db_manager.delete_cached_token(self.myid)
+                    logger.info(f"【{self.cookie_id}】已清除缓存的Token，下次将强制重新获取")
+                except Exception as clear_e:
+                    logger.warning(f"【{self.cookie_id}】清除Token缓存失败: {self._safe_str(clear_e)}")
+
+                # 清除当前Token状态，强制下次重新获取
+                self.current_token = None
+                self.last_token_refresh_time = 0
+
+                raise Exception(f"WebSocket注册失败: code={reg_code}, 响应大小={reg_response_size}字节")
+            else:
+                logger.info(f"【{self.cookie_id}】✅ WebSocket注册成功! code={reg_code}, 响应大小={reg_response_size}字节")
+        except asyncio.TimeoutError:
+            logger.error(f"【{self.cookie_id}】❌ WebSocket注册响应超时（5秒内未收到服务器响应）")
+            raise Exception("WebSocket注册超时: 5秒内未收到服务器响应")
+        except json.JSONDecodeError as e:
+            logger.error(f"【{self.cookie_id}】❌ WebSocket注册响应解析失败: {self._safe_str(e)}")
+            raise Exception(f"WebSocket注册响应解析失败: {self._safe_str(e)}")
+
         current_time = int(time.time() * 1000)
         msg = {
             "lwp": "/r/SyncStatus/ackDiff",
@@ -5842,9 +5876,15 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】心跳循环已退出")
 
     async def handle_heartbeat_response(self, message_data):
-        """处理心跳响应"""
+        """处理心跳响应（修复2：精确判断，避免误拦截注册响应）"""
         try:
             if message_data.get("code") == 200:
+                # 注册响应包含 body/headers.sid，体积较大，不应当作心跳处理
+                has_body = "body" in message_data
+                headers = message_data.get("headers", {})
+                has_sid = isinstance(headers, dict) and "sid" in headers
+                if has_body or has_sid:
+                    return False  # 这是注册响应，不是心跳
                 self.last_heartbeat_response = time.time()
                 logger.warning("心跳响应正常")
                 return True
@@ -8093,7 +8133,7 @@ class XianyuLive:
             # 如果不是同步包消息，直接返回
             if not self.is_sync_package(message_data):
                 # 添加调试日志，记录非同步包消息
-                logger.debug(f"【{self.cookie_id}】非同步包消息，跳过处理")
+                logger.info(f"【{self.cookie_id}】非同步包消息，跳过处理: lwp={message_data.get('lwp')}, code={message_data.get('code')}, keys={list(message_data.keys())}")
                 return
 
             # 获取并解密数据
@@ -8690,8 +8730,11 @@ class XianyuLive:
                                     message_data = json.loads(message)
 
                                     # 处理心跳响应
-                                    if await self.handle_heartbeat_response(message_data):
+                                    hb_handled = await self.handle_heartbeat_response(message_data)
+                                    if hb_handled:
                                         continue
+                                    # 修复4：记录非心跳消息，便于诊断
+                                    logger.info(f"【{self.cookie_id}】非心跳消息，进入业务处理: lwp={message_data.get('lwp')}, code={message_data.get('code')}, 大小={len(message)}字节")
 
                                     # 处理其他消息
                                     # 使用追踪的异步任务处理消息，防止阻塞后续消息接收
