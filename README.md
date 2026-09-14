@@ -53,8 +53,9 @@
 
 # 🐟 闲鱼自动回复系统
 
-[![GitHub](https://img.shields.io/badge/GitHub-zhinianboke%2Fxianyu--auto--reply-blue?logo=github)](https://github.com/zhinianboke/xianyu-auto-reply)
-[![Docker](https://img.shields.io/badge/Docker-一键部署-blue?logo=docker)](https://github.com/zhinianboke/xianyu-auto-reply#-快速开始)
+[![GitHub](https://img.shields.io/badge/GitHub-weiyinerzui%2Fxianyu--auto--reply-blue?logo=github)](https://github.com/weiyinerzui/xianyu-auto-reply)
+[![Gitee](https://img.shields.io/badge/Gitee-weiyinerzui%2Fxianyu--auto--reply-red?logo=gitee)](https://gitee.com/weiyinerzui/xianyu-auto-reply)
+[![Docker](https://img.shields.io/badge/Docker-一键部署-blue?logo=docker)](https://github.com/weiyinerzui/xianyu-auto-reply#-快速开始)
 [![Python](https://img.shields.io/badge/Python-3.11+-green?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-仅供学习-red.svg)](#️-版权声明与使用条款)
 
@@ -312,7 +313,7 @@ xianyu-auto-reply/
 
 ### 方式一：Docker 一键部署（最简单）⭐
 
-**国内用户（阿里云镜像，推荐）**：
+**Linux/macOS**：
 ```bash
 # 1. 创建数据目录
 mkdir -p xianyu-auto-reply
@@ -323,21 +324,10 @@ docker run -d \
   --restart always \
   -v $PWD/xianyu-auto-reply/:/app/data/ \
   --name xianyu-auto-reply \
-  registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
+  crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
 
 # 3. 访问系统
 # http://localhost:8080
-```
-
-**国际用户（Docker Hub镜像）**：
-```bash
-# 使用Docker Hub国际镜像
-docker run -d \
-  -p 8080:8080 \
-  --restart always \
-  -v $PWD/xianyu-auto-reply/:/app/data/ \
-  --name xianyu-auto-reply \
-  zhinianblog/xianyu-auto-reply:latest
 ```
 
 **Windows用户**：
@@ -345,11 +335,7 @@ docker run -d \
 # 创建数据目录
 mkdir xianyu-auto-reply
 
-# 国内用户（阿里云）
-docker run -d -p 8080:8080 --restart always -v %cd%/xianyu-auto-reply/:/app/data/ --name xianyu-auto-reply registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
-
-# 国际用户（Docker Hub）
-docker run -d -p 8080:8080 --restart always -v %cd%/xianyu-auto-reply/:/app/data/ --name xianyu-auto-reply zhinianblog/xianyu-auto-reply:latest
+docker run -d -p 8080:8080 --restart always -v %cd%/xianyu-auto-reply/:/app/data/ --name xianyu-auto-reply crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
 ```
 
 **ARM64服务器** (Oracle Cloud, AWS Graviton等)：
@@ -360,15 +346,15 @@ docker run -d \
   --restart always \
   -v $PWD/xianyu-auto-reply/:/app/data/ \
   --name xianyu-auto-reply \
-  registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
+  crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
 ```
 
 ### 方式二：从源码构建部署
 
-#### 🌍 国际版（推荐海外用户）
+#### 🌍 国际版（推荐海外用户，GitHub）
 ```bash
 # 1. 克隆项目
-git clone https://github.com/zhinianboke/xianyu-auto-reply.git
+git clone https://github.com/weiyinerzui/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 使用完整版配置（包含Redis缓存等增强功能）
@@ -378,10 +364,10 @@ docker-compose up -d --build
 # http://localhost:8080
 ```
 
-#### 🇨🇳 中国版（推荐国内用户）
+#### 🇨🇳 中国版（推荐国内用户，Gitee 国内专用）
 ```bash
 # 1. 克隆项目
-git clone https://github.com/zhinianboke/xianyu-auto-reply.git
+git clone https://gitee.com/weiyinerzui/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 使用中国镜像源配置（下载速度更快）
@@ -403,8 +389,8 @@ docker-compose -f docker-compose-cn.yml up -d --build
 ### 方式三：本地开发部署
 
 ```bash
-# 1. 克隆项目
-git clone https://github.com/zhinianboke/xianyu-auto-reply.git
+# 1. 克隆项目（国内用户可改用 Gitee: https://gitee.com/weiyinerzui/xianyu-auto-reply.git）
+git clone https://github.com/weiyinerzui/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 创建虚拟环境（推荐）
@@ -452,10 +438,9 @@ python Start.py
 - ✅ **linux/arm64** - ARM64处理器（ARM服务器、树莓派4+、Apple M系列）
 
 **镜像仓库**:
-- 🇨🇳 **阿里云**: `registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest`
-- 🌍 **Docker Hub**: `zhinianblog/xianyu-auto-reply:latest`
+- 🇨🇳 **阿里云容器镜像服务**: `crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest`
 
-**自动构建**: GitHub Actions自动构建并推送多架构镜像到两个镜像仓库，Docker会自动选择匹配的架构
+**自动构建**: GitHub Actions自动构建并推送多架构镜像，Docker会自动选择匹配的架构
 
 **适用的ARM云服务器**:
 - Oracle Cloud - Ampere A1 (永久免费4核24GB)
@@ -838,7 +823,6 @@ docker logs --tail 100 xianyu-auto-reply
 
 **更新到最新版本**：
 
-国内用户（阿里云镜像）：
 ```bash
 # 1. 停止并删除旧容器
 docker stop xianyu-auto-reply
@@ -848,41 +832,19 @@ docker rm xianyu-auto-reply
 docker rmi $(docker images --filter "reference=*xianyu-auto-reply*" -q)
 
 # 3. 拉取最新镜像
-docker pull registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
+docker pull crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
 
 # 4. 启动新容器
 docker run -d -p 8080:8080 --restart always \
   -v $PWD/xianyu-auto-reply/:/app/data/ \
   --name xianyu-auto-reply \
-  registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest
-```
-
-国际用户（Docker Hub）：
-```bash
-# 1. 停止并删除旧容器
-docker stop xianyu-auto-reply
-docker rm xianyu-auto-reply
-
-# 2. 删除旧镜像（释放磁盘空间）
-docker rmi $(docker images --filter "reference=*xianyu-auto-reply*" -q)
-
-# 3. 拉取最新镜像
-docker pull zhinianblog/xianyu-auto-reply:latest
-
-# 4. 启动新容器
-docker run -d -p 8080:8080 --restart always \
-  -v $PWD/xianyu-auto-reply/:/app/data/ \
-  --name xianyu-auto-reply \
-  zhinianblog/xianyu-auto-reply:latest
+  crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest
 ```
 
 **验证多架构镜像**：
 ```bash
 # 查看镜像支持的架构
-docker manifest inspect registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-auto-reply:latest | grep architecture
-
-# 或Docker Hub镜像
-docker manifest inspect zhinianblog/xianyu-auto-reply:latest | grep architecture
+docker manifest inspect crpi-q3ev0ncxsu26vjp0.cn-beijing.personal.cr.aliyuncs.com/weiyinerzui/xianyu-auto-reply:latest | grep architecture
 
 # 应该显示: "architecture": "amd64" 和 "architecture": "arm64"
 ```
@@ -942,7 +904,7 @@ docker start xianyu-auto-reply
 欢迎为项目做出贡献！您可以通过以下方式参与：
 
 ### 📝 提交问题
-- 在 [GitHub Issues](https://github.com/zhinianboke/xianyu-auto-reply/issues) 中报告Bug
+- 在 [GitHub Issues](https://github.com/weiyinerzui/xianyu-auto-reply/issues) 或 [Gitee Issues](https://gitee.com/weiyinerzui/xianyu-auto-reply/issues) 中报告Bug
 - 提出新功能建议和改进意见
 - 分享使用经验和最佳实践
 
@@ -993,7 +955,7 @@ docker-compose up -d
 
 ```bash
 # 克隆项目并从源码构建
-git clone https://github.com/zhinianboke/xianyu-auto-reply.git
+git clone https://github.com/weiyinerzui/xianyu-auto-reply.git
 cd xianyu-auto-reply
 ./docker-deploy.sh
 ```
@@ -1052,8 +1014,9 @@ powershell -ExecutionPolicy Bypass -File docker-deploy.bat
 ### 👤 原作者信息
 
 - **项目作者**：zhinianboke
-- **项目地址**：https://github.com/zhinianboke/xianyu-auto-reply
-- **联系方式**：通过GitHub Issues或项目交流群
+- **项目地址**：https://github.com/weiyinerzui/xianyu-auto-reply
+- **国内地址**：https://gitee.com/weiyinerzui/xianyu-auto-reply
+- **联系方式**：通过GitHub/Gitee Issues或项目交流群
 
 ### ⚠️ 免责声明
 
@@ -1066,7 +1029,8 @@ powershell -ExecutionPolicy Bypass -File docker-deploy.bat
 
 如发现本项目存在侵权内容，请通过以下方式联系：
 
-- **GitHub Issues**：https://github.com/zhinianboke/xianyu-auto-reply/issues
+- **GitHub Issues**：https://github.com/weiyinerzui/xianyu-auto-reply/issues
+- **Gitee Issues**：https://gitee.com/weiyinerzui/xianyu-auto-reply/issues
 - **邮箱联系**：在项目交流群中获取联系方式
 
 我们将在收到通知后**立即处理**并删除相关内容。
@@ -1166,4 +1130,4 @@ python test_php_stats.py
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=zhinianboke/xianyu-auto-reply&type=Date)](https://www.star-history.com/#zhinianboke/xianyu-auto-reply&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=weiyinerzui/xianyu-auto-reply&type=Date)](https://www.star-history.com/#weiyinerzui/xianyu-auto-reply&Date)
