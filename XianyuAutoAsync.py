@@ -3839,7 +3839,9 @@ class XianyuLive:
 
             # 生成AI回复
             # 由于外部已实现防抖机制，跳过内部等待（skip_wait=True）
-            reply = ai_reply_engine.generate_reply(
+            # 修复：改用异步包装器（内部经 asyncio.to_thread 在线程池执行），
+            # 避免同步 requests.post 长时间阻塞事件循环，导致所有账号心跳超时/消息丢失
+            reply = await ai_reply_engine.generate_reply_async(
                 message=send_message,
                 item_info=item_info,
                 chat_id=chat_id,

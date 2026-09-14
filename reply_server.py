@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
 from urllib.parse import unquote
-import hashlib
+import hmac
 import secrets
 import time
 import json
@@ -40,9 +40,13 @@ KEYWORDS_FILE = Path(__file__).parent / "回复关键字.txt"
 
 # 简单的用户认证配置
 ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码（用户应立即修改）
+# 默认管理员密码统一由 db_manager.BUILTIN_DEFAULT_ADMIN_PASSWORD 管理
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
-TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
+# token过期时间：默认24小时，可通过环境变量 TOKEN_EXPIRE_TIME 覆盖（单位：秒）
+try:
+    TOKEN_EXPIRE_TIME = int(os.getenv('TOKEN_EXPIRE_TIME', 86400))
+except (TypeError, ValueError):
+    TOKEN_EXPIRE_TIME = 86400
 
 # HTTP Bearer认证
 security = HTTPBearer(auto_error=False)
@@ -236,6 +240,31 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
     return token_data
 
 
+# 使用默认密码的 admin 仅允许访问的路径白名单（改密/登出/会话自检）
+_PASSWORD_CHANGE_WHITELIST = {
+    '/change-admin-password',
+    '/change-password',
+    '/logout',
+    '/verify',
+    '/api/check-default-password',
+}
+
+def _enforce_password_change(user_info: Dict[str, Any], request: Request = None):
+    """服务端阻断：使用默认密码的 admin 必须先修改密码
+
+    历史版本仅在前端提示，未做服务端拦截；现在除白名单路径外一律返回 403。
+    """
+    if not user_info or not user_info.get('must_change_password'):
+        return
+    path = request.url.path if request else ''
+    if path in _PASSWORD_CHANGE_WHITELIST:
+        return
+    logger.warning(f"【{user_info.get('username')}】使用默认密码，已拦截请求: {path}")
+    raise HTTPException(
+        status_code=403,
+        detail="安全限制：当前仍在使用默认密码，请先通过 /change-admin-password 修改密码后再进行其他操作"
+    )
+
 def verify_admin_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security), request: Request = None) -> Dict[str, Any]:
     """验证管理员token
     
@@ -251,6 +280,9 @@ def verify_admin_token(credentials: Optional[HTTPAuthorizationCredentials] = Dep
     if user_info['username'] != ADMIN_USERNAME:
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
+    # 服务端阻断：使用默认密码的 admin 仅允许白名单操作
+    _enforce_password_change(user_info, request)
+
     return user_info
 
 
@@ -263,6 +295,8 @@ def require_auth(user_info: Optional[Dict[str, Any]] = Depends(verify_token), re
     """
     if not user_info:
         raise HTTPException(status_code=401, detail="未授权访问")
+    # 服务端阻断：使用默认密码的 admin 仅允许白名单操作
+    _enforce_password_change(user_info, request)
     return user_info
 
 
@@ -636,26 +670,20 @@ async def login(request: LoginRequest, req: Request = None):
             if user:
                 # 生成token
                 token = generate_token()
+                # 服务端阻断标记：使用默认密码的 admin 仅能访问改密/登出等白名单端点
+                password_change_required = (
+                    user['username'] == ADMIN_USERNAME
+                    and db_manager.is_using_default_admin_password()
+                )
+                if password_change_required:
+                    logger.warning(f"⚠️ 【{user['username']}】使用默认密码登录，需立即修改密码（服务端已限制其他操作）")
                 SESSION_TOKENS[token] = {
                     'user_id': user['id'],
                     'username': user['username'],
                     'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
+                    'must_change_password': password_change_required,
                     'timestamp': time.time()
                 }
-
-                # 区分管理员和普通用户的日志
-                if user['username'] == ADMIN_USERNAME:
-                    logger.info(f"【{user['username']}#{user['id']}】登录成功（管理员）")
-                else:
-                    logger.info(f"【{user['username']}#{user['id']}】登录成功")
-
-                # 安全修复：检查admin是否使用默认密码
-                password_change_required = False
-                if user['username'] == ADMIN_USERNAME:
-                    default_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
-                    if user.get('password_hash') == default_password_hash:
-                        password_change_required = True
-                        logger.warning(f"⚠️ 【{user['username']}】使用默认密码登录，需要立即修改密码")
 
                 return LoginResponse(
                     success=True,
@@ -683,10 +711,16 @@ async def login(request: LoginRequest, req: Request = None):
         if user and db_manager.verify_user_password(user['username'], request.password):
             # 生成token
             token = generate_token()
+            # admin 默认密码阻断标记（防止通过 admin@localhost 邮箱登录绕过）
+            must_change = (
+                user['username'] == ADMIN_USERNAME
+                and db_manager.is_using_default_admin_password()
+            )
             SESSION_TOKENS[token] = {
                 'user_id': user['id'],
                 'username': user['username'],
                 'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
+                'must_change_password': must_change,
                 'timestamp': time.time()
             }
 
@@ -695,10 +729,11 @@ async def login(request: LoginRequest, req: Request = None):
             return LoginResponse(
                 success=True,
                 token=token,
-                message="登录成功",
+                message="登录成功" if not must_change else "登录成功，请立即修改默认密码",
                 user_id=user['id'],
                 username=user['username'],
-                is_admin=(user['username'] == ADMIN_USERNAME)
+                is_admin=(user['username'] == ADMIN_USERNAME),
+                password_change_required=must_change
             )
 
         logger.warning(f"【{request.email}】邮箱登录失败：邮箱或密码错误")
@@ -730,10 +765,16 @@ async def login(request: LoginRequest, req: Request = None):
 
         # 生成token
         token = generate_token()
+        # admin 默认密码阻断标记（验证码登录同样检测）
+        must_change = (
+            user['username'] == ADMIN_USERNAME
+            and db_manager.is_using_default_admin_password()
+        )
         SESSION_TOKENS[token] = {
             'user_id': user['id'],
             'username': user['username'],
             'is_admin': user.get('is_admin', False) or user['username'] == ADMIN_USERNAME,
+            'must_change_password': must_change,
             'timestamp': time.time()
         }
 
@@ -742,10 +783,11 @@ async def login(request: LoginRequest, req: Request = None):
         return LoginResponse(
             success=True,
             token=token,
-            message="登录成功",
+            message="登录成功" if not must_change else "登录成功，请立即修改默认密码",
             user_id=user['id'],
             username=user['username'],
-            is_admin=(user['username'] == ADMIN_USERNAME)
+            is_admin=(user['username'] == ADMIN_USERNAME),
+            password_change_required=must_change
         )
 
     else:
@@ -790,6 +832,10 @@ async def change_admin_password(request: ChangePasswordRequest, admin_user: Dict
         success = db_manager.update_user_password('admin', request.new_password)
 
         if success:
+            # 密码已修改：清除所有 admin 会话的"待改密"阻断标记
+            for _t, _d in SESSION_TOKENS.items():
+                if _d.get('username') == 'admin':
+                    _d['must_change_password'] = False
             logger.info(f"【admin#{admin_user['user_id']}】管理员密码修改成功")
             return {"success": True, "message": "密码修改成功"}
         else:
@@ -820,6 +866,10 @@ async def change_user_password(request: ChangePasswordRequest, current_user: Dic
         success = db_manager.update_user_password(username, request.new_password)
 
         if success:
+            # 密码已修改：清除该用户所有会话的"待改密"阻断标记（admin 可能经由本端点改密）
+            for _t, _d in SESSION_TOKENS.items():
+                if _d.get('username') == username:
+                    _d['must_change_password'] = False
             logger.info(f"【{username}#{user_id}】用户密码修改成功")
             return {"success": True, "message": "密码修改成功"}
         else:
@@ -846,9 +896,9 @@ async def check_default_password(current_user: Dict[str, Any] = Depends(get_curr
             logger.info(f"非admin用户，跳过检查")
             return {"using_default": False}
 
-        # 检查是否使用默认密码
-        using_default = db_manager.verify_user_password('admin', DEFAULT_ADMIN_PASSWORD)
-        logger.info(f"默认密码检查结果: {using_default}, DEFAULT_ADMIN_PASSWORD={DEFAULT_ADMIN_PASSWORD}")
+        # 检查是否使用默认密码（不产生副作用，仅读取状态）
+        using_default = db_manager.is_using_default_admin_password()
+        logger.info(f"默认密码检查结果: {using_default}")
         
         return {"using_default": using_default}
 
@@ -1261,11 +1311,12 @@ def verify_api_key(api_key: str) -> bool:
         if not qq_secret_key:
             qq_secret_key = API_SECRET_KEY
 
-        return api_key == qq_secret_key
+        # 常量时间比较，防止时序攻击
+        return hmac.compare_digest(api_key.encode('utf-8'), str(qq_secret_key).encode('utf-8'))
     except Exception as e:
         logger.error(f"验证API秘钥时发生异常: {e}")
         # 异常情况下使用默认秘钥验证
-        return api_key == API_SECRET_KEY
+        return hmac.compare_digest(api_key.encode('utf-8'), API_SECRET_KEY.encode('utf-8'))
 
 
 @app.post('/send-message', response_model=SendMessageResponse)
@@ -1296,7 +1347,8 @@ async def send_message_api(request: SendMessageRequest):
 
         # 验证API秘钥
         if not verify_api_key(cleaned_api_key):
-            logger.warning(f"API秘钥验证失败: {cleaned_api_key}")
+            # 安全修复：日志不打印秘钥内容，避免凭证泄漏到日志文件
+            logger.warning("API秘钥验证失败")
             return SendMessageResponse(
                 success=False,
                 message="API秘钥验证失败"

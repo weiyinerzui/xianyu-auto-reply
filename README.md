@@ -33,6 +33,20 @@
     *   移除混淆代码（exec），确保核心逻辑透明可见。
     *   优化随机数生成逻辑，提升安全性。
 
+7.  **密码哈希升级（bcrypt）**:
+    *   用户密码改用 bcrypt 加盐哈希存储，不再使用无盐 SHA256。
+    *   存量 SHA256 哈希在用户下次登录成功时自动透明升级，无需手动迁移。
+    *   密码比较统一使用常量时间算法，防御时序攻击。
+
+8.  **闲鱼账号密码加密存储**:
+    *   cookies 表中的闲鱼登录密码改用 Fernet 对称加密存储（`enc:v1:` 前缀）。
+    *   加密密钥自动生成并保存于 `data/.cookie_secret_key`（可用环境变量 `COOKIE_ENC_KEY` 指定）。
+    *   存量明文密码读取兼容，下次保存时自动加密。
+
+9.  **默认密码服务端强制阻断**:
+    *   使用默认密码 `admin123` 的 admin 账号，服务端仅允许访问改密/登出等白名单接口，其余一律 403。
+    *   支持通过环境变量 `ADMIN_PASSWORD` 指定初始管理员密码（bcrypt 加密存储，无强制改密限制）。
+
 
 </details>
 
@@ -229,6 +243,14 @@ xianyu-auto-reply/
 </details>
 
 ## 📅 项目更新日志
+
+### 安全专项（本轮）
+- 密码哈希迁移 bcrypt（存量 SHA256 登录时透明升级），密码比较改常量时间算法
+- cookies 表闲鱼登录密码 Fernet 加密存储，密钥自动生成于 data/.cookie_secret_key
+- 默认密码服务端强制阻断：未改密的 admin 仅能访问改密/登出白名单
+- ADMIN_PASSWORD 环境变量真正接入（此前 compose 中宣传但代码未读取）
+- AI 回复改走异步线程池，修复阻塞事件循环致全账号心跳超时的问题
+- 删除无引用的孪生/死文件：secure_confirm.py、secure_freeshipping.py、old_slider.py、decode_obfuscated.py、update_prompts.py、verify_fix.py
 
 ### 2025-12
 - 2025-12-30: 修复滑块验证模块日期过期问题，延长有效期至2099年
@@ -444,32 +466,35 @@ python Start.py
 
 ### ⚙️ 环境变量配置（可选）
 
-系统支持通过环境变量进行配置，主要配置项包括：
+> ⚠️ **重要提示**：历史版本曾宣传 `ADMIN_PASSWORD`、`JWT_SECRET_KEY`、`AUTO_REPLY_ENABLED`、`HEARTBEAT_INTERVAL` 等环境变量，
+> **这些变量实际不生效**（代码未读取），已于近期修正。功能开关、AI配置、心跳/Token刷新间隔等
+> 请通过 `global_config.yml` 或 Web 管理界面修改。
+
+以下为代码**实际读取**的环境变量：
 
 ```bash
 # 基础配置
-WEB_PORT=8080                          # Web服务端口
-API_HOST=0.0.0.0                       # API服务主机
+WEB_PORT=8080                          # 宿主机端口映射（docker-compose 层面生效）
+API_HOST=0.0.0.0                       # API服务主机（本地运行时生效）
+API_PORT=8080                          # API服务端口（本地运行时生效）
 TZ=Asia/Shanghai                       # 时区设置
 
 # 数据库配置
 DB_PATH=data/xianyu_data.db            # 数据库文件路径（默认在data目录）
 
-# 管理员配置
-ADMIN_USERNAME=admin                   # 管理员用户名
-ADMIN_PASSWORD=admin123                # 管理员密码（请修改）
-JWT_SECRET_KEY=your-secret-key         # JWT密钥（请修改）
-
-# 功能开关
-AUTO_REPLY_ENABLED=true                # 启用自动回复
-AUTO_DELIVERY_ENABLED=true             # 启用自动发货
-AI_REPLY_ENABLED=false                 # 启用AI回复
-
 # 日志配置
-LOG_LEVEL=INFO                         # 日志级别
-SQL_LOG_ENABLED=true                   # SQL日志
+SQL_LOG_ENABLED=true                   # SQL日志开关
+SQL_LOG_LEVEL=INFO                     # SQL日志级别
 
-# 资源限制
+# 会话配置
+TOKEN_EXPIRE_TIME=86400                # 登录会话token有效期（秒，默认24小时）
+
+# AI视觉模型（可选，见AI设置）
+QNAIGC_API_KEY=                        # 视觉API密钥
+QNAIGC_BASE_URL=                       # 视觉API地址
+QNAIGC_VISION_MODEL=                   # 视觉模型名
+
+# 资源限制（docker-compose deploy 层面生效）
 MEMORY_LIMIT=2048                      # 内存限制(MB)
 CPU_LIMIT=2.0                          # CPU限制(核心数)
 

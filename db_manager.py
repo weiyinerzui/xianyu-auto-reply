@@ -2,9 +2,153 @@ import sqlite3
 import os
 import threading
 import hashlib
+import hmac
 import time
 import json
 import random
+
+# bcrypt 密码哈希（依赖已声明于 requirements.txt: passlib[bcrypt]）
+# 若环境缺失则回退 SHA256，保证系统可用性
+try:
+    import bcrypt
+    BCRYPT_AVAILABLE = True
+except ImportError:
+    bcrypt = None
+    BCRYPT_AVAILABLE = False
+
+# 内置默认管理员密码（仅当未设置 ADMIN_PASSWORD 环境变量时使用）
+BUILTIN_DEFAULT_ADMIN_PASSWORD = "admin123"
+
+
+def _legacy_sha256(password: str) -> str:
+    """旧版无盐 SHA256 哈希（仅用于存量数据兼容验证）"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _is_bcrypt_hash(stored: str) -> bool:
+    """判断存储的哈希是否为 bcrypt 格式"""
+    return bool(stored) and stored.startswith(('$2a$', '$2b$', '$2y$'))
+
+
+def hash_password(password: str) -> str:
+    """生成密码哈希：bcrypt 优先，依赖缺失时回退 SHA256"""
+    if BCRYPT_AVAILABLE:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('ascii')
+    return _legacy_sha256(password)
+
+
+def verify_password_hash(stored: str, password: str) -> bool:
+    """验证密码：兼容 bcrypt 与存量 SHA256"""
+    if not stored:
+        return False
+    if _is_bcrypt_hash(stored):
+        if not BCRYPT_AVAILABLE:
+            logger.error("存储的密码哈希为 bcrypt 格式，但 bcrypt 库不可用，无法验证")
+            return False
+        try:
+            return bcrypt.checkpw(password.encode('utf-8'), stored.encode('ascii'))
+        except (ValueError, TypeError):
+            return False
+    # 存量 SHA256：常量时间比较，防止时序攻击
+    return hmac.compare_digest(stored, _legacy_sha256(password))
+
+
+# ==================== Cookie 密码字段加密（Fernet） ====================
+# 格式: enc:v1:<fernet token>；无前缀的存量明文读时原样返回，下次写入自动加密
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    _CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    Fernet = None
+    InvalidToken = Exception
+    _CRYPTOGRAPHY_AVAILABLE = False
+
+_COOKIE_SECRET_PREFIX = "enc:v1:"
+
+
+def _load_or_create_secret_key(db_path: str):
+    """加载或生成 Cookie 密码加密密钥
+
+    优先级: 环境变量 COOKIE_ENC_KEY > <db目录>/.cookie_secret_key
+    首次自动生成密钥文件并落盘（跨重启稳定）。
+    """
+    if not _CRYPTOGRAPHY_AVAILABLE:
+        return None
+
+    env_key = os.getenv('COOKIE_ENC_KEY')
+    if env_key:
+        try:
+            return Fernet(env_key.encode('ascii'))
+        except Exception as e:
+            logger.error(f"环境变量 COOKIE_ENC_KEY 不是合法的 Fernet 密钥: {e}")
+            return None
+
+    key_file = os.path.join(os.path.dirname(db_path) or '.', '.cookie_secret_key')
+    try:
+        if os.path.exists(key_file):
+            with open(key_file, 'rb') as f:
+                key = f.read().strip()
+            if key:
+                return Fernet(key)
+        # 首次生成
+        key = Fernet.generate_key()
+        with open(key_file, 'wb') as f:
+            f.write(key)
+        try:
+            os.chmod(key_file, 0o600)
+        except (OSError, NotImplementedError):
+            pass  # Windows 上 chmod 限制，忽略
+        logger.info(f"已生成 Cookie 密码加密密钥文件: {key_file}")
+        return Fernet(key)
+    except Exception as e:
+        logger.error(f"加载/生成 Cookie 加密密钥失败（Cookie 密码将以明文存储）: {e}")
+        return None
+
+
+_cookie_secret_fernet = None
+_cookie_secret_loaded = False
+
+
+def _get_cookie_fernet(db_path: str = 'data/xianyu_data.db'):
+    """惰性获取全局 Cookie 加密器（单例）"""
+    global _cookie_secret_fernet, _cookie_secret_loaded
+    if not _cookie_secret_loaded:
+        _cookie_secret_loaded = True
+        _cookie_secret_fernet = _load_or_create_secret_key(db_path)
+    return _cookie_secret_fernet
+
+
+def encrypt_cookie_password(plain: str, db_path: str = 'data/xianyu_data.db') -> str:
+    """加密 Cookie 登录密码；空值原样返回；加密器不可用时降级明文并告警"""
+    if not plain:
+        return plain
+    fernet = _get_cookie_fernet(db_path)
+    if fernet is None:
+        logger.warning("Cookie 密码加密不可用，将以明文存储")
+        return plain
+    try:
+        token = fernet.encrypt(plain.encode('utf-8')).decode('ascii')
+        return _COOKIE_SECRET_PREFIX + token
+    except Exception as e:
+        logger.error(f"Cookie 密码加密失败（将以明文存储）: {e}")
+        return plain
+
+
+def decrypt_cookie_password(stored: str) -> str:
+    """解密 Cookie 登录密码；存量明文（无前缀）原样返回"""
+    if not stored or not stored.startswith(_COOKIE_SECRET_PREFIX):
+        return stored
+    fernet = _get_cookie_fernet()
+    if fernet is None:
+        logger.error("存储了加密的 Cookie 密码但解密器不可用")
+        return ''
+    try:
+        token = stored[len(_COOKIE_SECRET_PREFIX):].encode('ascii')
+        return fernet.decrypt(token).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Cookie 密码解密失败（密钥不匹配或数据损坏）: {e}")
+        return ''
 import string
 import aiohttp
 import io
@@ -885,13 +1029,25 @@ class DBManager:
             admin_exists = cursor.fetchone()[0] > 0
 
             if not admin_exists:
-                # 首次创建admin用户，设置默认密码
-                default_password_hash = hashlib.sha256("admin123".encode()).hexdigest()
-                cursor.execute('''
-                INSERT INTO users (username, email, password_hash) VALUES
-                ('admin', 'admin@localhost', ?)
-                ''', (default_password_hash,))
-                logger.info("创建默认admin用户，密码: admin123")
+                # 首次创建admin用户
+                # 优先使用环境变量 ADMIN_PASSWORD（bcrypt 哈希）
+                env_admin_password = os.getenv('ADMIN_PASSWORD', '')
+                if env_admin_password:
+                    admin_password_hash = hash_password(env_admin_password)
+                    cursor.execute('''
+                    INSERT INTO users (username, email, password_hash) VALUES
+                    ('admin', 'admin@localhost', ?)
+                    ''', (admin_password_hash,))
+                    logger.info("创建默认admin用户（密码来自环境变量 ADMIN_PASSWORD，bcrypt 已加密存储）")
+                else:
+                    # 内置默认密码存为 legacy SHA256，保持“是否默认密码”可检测；
+                    # 用户修改密码后自动升级为 bcrypt
+                    admin_password_hash = _legacy_sha256(BUILTIN_DEFAULT_ADMIN_PASSWORD)
+                    cursor.execute('''
+                    INSERT INTO users (username, email, password_hash) VALUES
+                    ('admin', 'admin@localhost', ?)
+                    ''', (admin_password_hash,))
+                    logger.info(f"创建默认admin用户，默认密码: {BUILTIN_DEFAULT_ADMIN_PASSWORD}（请登录后立即修改）")
 
             # 获取admin用户ID，用于历史数据绑定
             self._execute_sql(cursor, "SELECT id FROM users WHERE username = 'admin'")
@@ -1583,7 +1739,8 @@ class DBManager:
                         'remark': result[4] or '',
                         'pause_duration': result[5] if result[5] is not None else 10,  # 0是有效值，表示不暂停
                         'username': result[6] or '',
-                        'password': result[7] or '',
+                        # 解密登录密码（存量明文兼容返回）；外部仅做判空/掩码展示，不回写数据库
+                        'password': decrypt_cookie_password(result[7] or ''),
                         'show_browser': bool(result[8]) if result[8] is not None else False,
                         'created_at': result[9]
                     }
@@ -1690,7 +1847,8 @@ class DBManager:
                     
                     if password is not None:
                         insert_fields.append('password')
-                        insert_values.append(password)
+                        # 加密存储闲鱼账号登录密码
+                        insert_values.append(encrypt_cookie_password(password, self.db_path))
                         insert_placeholders.append('?')
                     
                     if show_browser is not None:
@@ -1719,7 +1877,8 @@ class DBManager:
                     
                     if password is not None:
                         update_fields.append("password = ?")
-                        params.append(password)
+                        # 加密存储闲鱼账号登录密码
+                        params.append(encrypt_cookie_password(password, self.db_path))
                     
                     if show_browser is not None:
                         update_fields.append("show_browser = ?")
@@ -3812,7 +3971,8 @@ class DBManager:
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                password_hash = hashlib.sha256(password.encode()).hexdigest()
+                # bcrypt 哈希（依赖缺失时回退 SHA256）
+                password_hash = hash_password(password)
 
                 cursor.execute('''
                 INSERT INTO users (username, email, password_hash)
@@ -3884,20 +4044,65 @@ class DBManager:
                 return None
 
     def verify_user_password(self, username: str, password: str) -> bool:
-        """验证用户密码"""
+        """验证用户密码
+
+        兼容 bcrypt 与存量 SHA256；存量 SHA256 验证成功且非默认密码时，
+        透明升级为 bcrypt（默认密码保持 legacy 哈希，以保留可检测性）。
+        """
         user = self.get_user_by_username(username)
         if not user:
             return False
 
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        return user['password_hash'] == password_hash and user['is_active']
+        stored_hash = user.get('password_hash') or ''
+        if verify_password_hash(stored_hash, password) and user['is_active']:
+            # 存量 SHA256 → bcrypt 透明升级（默认密码除外）
+            if not _is_bcrypt_hash(stored_hash):
+                if stored_hash != _legacy_sha256(BUILTIN_DEFAULT_ADMIN_PASSWORD):
+                    self._upgrade_password_hash(username, password)
+                    logger.info(f"用户 {username} 密码哈希已透明升级为 bcrypt")
+            return True
+        return False
 
-    def update_user_password(self, username: str, new_password: str) -> bool:
-        """更新用户密码"""
+    def _upgrade_password_hash(self, username: str, password: str) -> bool:
+        """将存量 SHA256 密码哈希升级为 bcrypt（仅内部使用）"""
+        if not BCRYPT_AVAILABLE:
+            return False
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+                cursor.execute('''
+                UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE username = ?
+                ''', (hash_password(password), username))
+                if cursor.rowcount > 0:
+                    self.conn.commit()
+                    return True
+                self.conn.rollback()
+                return False
+            except Exception as e:
+                logger.error(f"升级密码哈希失败: {username} - {e}")
+                self.conn.rollback()
+                return False
+
+    def is_using_default_admin_password(self) -> bool:
+        """检测 admin 是否仍在使用内置默认密码 admin123（仅对 legacy 哈希可判）"""
+        try:
+            user = self.get_user_by_username('admin')
+            if not user:
+                return False
+            stored = user.get('password_hash') or ''
+            return not _is_bcrypt_hash(stored) and hmac.compare_digest(
+                stored, _legacy_sha256(BUILTIN_DEFAULT_ADMIN_PASSWORD))
+        except Exception as e:
+            logger.error(f"检测默认密码失败: {e}")
+            return False
+
+    def update_user_password(self, username: str, new_password: str) -> bool:
+        """更新用户密码（bcrypt 哈希）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                password_hash = hash_password(new_password)
 
                 cursor.execute('''
                 UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP

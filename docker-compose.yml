@@ -24,43 +24,17 @@ services:
       # 可选：备份目录
       - ./backups:/app/backups:rw
     environment:
+      # ⚠️ 以下仅为代码实际读取的环境变量。功能开关、AI配置、心跳/Token刷新间隔等
+      # 请在 global_config.yml 或 Web 管理界面中修改（历史版本曾宣传环境变量方式，实际不生效）
       - PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
       - PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
       - TZ=${TZ:-Asia/Shanghai}
       - DB_PATH=${DB_PATH:-/app/data/xianyu_data.db}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DEBUG=${DEBUG:-false}
-      - RELOAD=${RELOAD:-false}
       # SQL日志配置（默认启用，可通过环境变量覆盖）
       - SQL_LOG_ENABLED=${SQL_LOG_ENABLED:-true}
       - SQL_LOG_LEVEL=${SQL_LOG_LEVEL:-INFO}
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-default-secret-key}
-      - SESSION_TIMEOUT=${SESSION_TIMEOUT:-3600}
-      # 多用户系统配置
-      - MULTIUSER_ENABLED=${MULTIUSER_ENABLED:-true}
-      - USER_REGISTRATION_ENABLED=${USER_REGISTRATION_ENABLED:-true}
-      - EMAIL_VERIFICATION_ENABLED=${EMAIL_VERIFICATION_ENABLED:-true}
-      - CAPTCHA_ENABLED=${CAPTCHA_ENABLED:-true}
+      # 登录会话token有效期（秒，默认24小时）
       - TOKEN_EXPIRE_TIME=${TOKEN_EXPIRE_TIME:-86400}
-      - AUTO_REPLY_ENABLED=${AUTO_REPLY_ENABLED:-true}
-      - AUTO_DELIVERY_ENABLED=${AUTO_DELIVERY_ENABLED:-true}
-      - AUTO_DELIVERY_TIMEOUT=${AUTO_DELIVERY_TIMEOUT:-30}
-      - API_CARD_TIMEOUT=${API_CARD_TIMEOUT:-10}
-      - BATCH_DATA_LOCK_TIMEOUT=${BATCH_DATA_LOCK_TIMEOUT:-5}
-      # AI回复相关配置
-      - AI_REPLY_ENABLED=${AI_REPLY_ENABLED:-false}
-      - DEFAULT_AI_MODEL=${DEFAULT_AI_MODEL:-qwen-plus}
-      - DEFAULT_AI_BASE_URL=${DEFAULT_AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
-      - AI_REQUEST_TIMEOUT=${AI_REQUEST_TIMEOUT:-30}
-      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-100}
-      - WEBSOCKET_URL=${WEBSOCKET_URL:-wss://wss-goofish.dingtalk.com/}
-      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-15}
-      - HEARTBEAT_TIMEOUT=${HEARTBEAT_TIMEOUT:-5}
-      - TOKEN_REFRESH_INTERVAL=${TOKEN_REFRESH_INTERVAL:-28800}
-      - TOKEN_RETRY_INTERVAL=${TOKEN_RETRY_INTERVAL:-300}
-      - MESSAGE_EXPIRE_TIME=${MESSAGE_EXPIRE_TIME:-300000}
 
     networks:
       - xianyu-network
