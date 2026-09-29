@@ -194,6 +194,20 @@ class XianyuLive:
     _item_detail_cache_max_size = 1000  # 最大缓存1000个商品
     _item_detail_cache_ttl = 24 * 60 * 60  # 24小时TTL
 
+    # 商品详情浏览器获取冷却：防止拦截失败时反复启动浏览器（参照订单详情 ed289ad）
+    _item_detail_browser_cooldowns = {}  # {item_id: last browser fetch timestamp}
+    _ITEM_DETAIL_BROWSER_COOLDOWN_SECONDS = 300  # 5分钟冷却
+
+    # 商品详情补抓任务派发冷却：防止每次AI回复都派发一个抓取任务
+    _item_detail_refetch_scheduled = {}  # {item_id: last scheduled timestamp}
+    _ITEM_DETAIL_REFETCH_COOLDOWN_SECONDS = 1800  # 30分钟冷却
+
+    # 商品详情补抓失败熔断：平台风控下抓取几乎必然失败，失败达阈值后停止自动补抓
+    _item_detail_refetch_failures = defaultdict(int)  # {item_id: 连续失败次数}
+    _ITEM_DETAIL_REFETCH_MAX_FAILURES = 2  # 连续失败2次后熔断，改为手动触发
+    # 熔断后仍允许的探活间隔（默认永不自动重试，即永久熔断）
+    _ITEM_DETAIL_REFETCH_BREAKER_RESET_SECONDS = 7 * 24 * 60 * 60  # 7天
+
     # 类级别的实例管理字典，用于API调用
     _instances = {}  # {cookie_id: XianyuLive实例}
     _instances_lock = asyncio.Lock()
@@ -2868,7 +2882,11 @@ class XianyuLive:
             return False
 
     async def fetch_item_detail_from_api(self, item_id: str) -> str:
-        """获取商品详情（使用浏览器获取，支持24小时缓存）
+        """获取商品详情（API优先，浏览器兜底，支持24小时缓存）
+
+        参照订单详情 API 优先方案（ba66e83）：
+        1. 走 mtop.taobao.idle.pc.detail API 提取描述，不依赖前端CSS类名
+        2. API 被风控拦截时回退浏览器，浏览器改为网络拦截方式获取
 
         Args:
             item_id: 商品ID
@@ -2903,7 +2921,14 @@ class XianyuLive:
                         del self._item_detail_cache[item_id]
                         logger.warning(f"缓存已过期，删除: {item_id}")
 
-            # 2. 尝试使用浏览器获取商品详情
+            # 2. API 优先：通过 mtop.taobao.idle.pc.detail 获取描述
+            detail_from_api = await self._fetch_item_detail_from_mtop(item_id)
+            if detail_from_api:
+                await self._add_to_item_cache(item_id, detail_from_api)
+                logger.info(f"成功通过API获取商品详情: {item_id}, 长度: {len(detail_from_api)}")
+                return detail_from_api
+
+            # 3. API 失败（通常为风控拦截），回退浏览器获取
             detail_from_browser = await self._fetch_item_detail_from_browser(item_id)
             if detail_from_browser:
                 # 保存到缓存（带大小限制）
@@ -2911,12 +2936,69 @@ class XianyuLive:
                 logger.info(f"成功通过浏览器获取商品详情: {item_id}, 长度: {len(detail_from_browser)}")
                 return detail_from_browser
 
-            # 浏览器获取失败
-            logger.warning(f"浏览器获取商品详情失败: {item_id}")
+            logger.warning(f"API与浏览器均未能获取商品详情: {item_id}")
             return ""
 
         except Exception as e:
             logger.error(f"获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
+            return ""
+
+    async def _fetch_item_detail_from_mtop(self, item_id: str) -> str:
+        """通过 mtop.taobao.idle.pc.detail API 获取商品描述（单次请求，快速失败）
+
+        注意：不复用 self.get_item_info —— 其失败重试4次，而该API的典型失败
+        是 RGV587/FAIL_SYS_USER_VALIDATE 风控拦截（缺浏览器指纹），重试无意义
+        只会拖慢回退浏览器的速度。
+
+        Returns:
+            描述文本；失败（含风控拦截）返回空字符串
+        """
+        try:
+            from utils.item_detail_utils import extract_desc_from_detail_api
+
+            if not self.session:
+                await self.create_session()
+
+            timestamp = str(int(time.time() * 1000))
+            data_val = json.dumps({"itemId": item_id}, separators=(',', ':'))
+            cookies = trans_cookies(self.cookies_str)
+            token = cookies.get('_m_h5_tk', '').split('_')[0] if cookies.get('_m_h5_tk') else ''
+            sign = generate_sign(timestamp, token, data_val)
+
+            params = {
+                'jsv': '2.7.2',
+                'appKey': '34839810',
+                't': timestamp,
+                'sign': sign,
+                'v': '1.0',
+                'type': 'originaljson',
+                'accountSite': 'xianyu',
+                'dataType': 'json',
+                'timeout': '20000',
+                'api': 'mtop.taobao.idle.pc.detail',
+                'sessionOption': 'AutoLoginOnly',
+                'spm_cnt': 'a21ybx.item.detail.0.0',
+            }
+
+            async with self.session.post(
+                'https://h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail/1.0/',
+                params=params,
+                data={'data': data_val}
+            ) as response:
+                res_json = await response.json(content_type=None)
+
+            ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
+            if not any('SUCCESS' in ret for ret in ret_value):
+                logger.warning(f"商品详情API调用失败（将回退浏览器）: {item_id}, ret={ret_value}")
+                return ""
+
+            desc = extract_desc_from_detail_api(res_json.get('data'))
+            if desc:
+                logger.info(f"从详情API提取到商品描述: {item_id}, 长度: {len(desc)}")
+            return desc
+
+        except Exception as e:
+            logger.error(f"商品详情API获取异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
 
     async def _add_to_item_cache(self, item_id: str, detail: str):
@@ -2982,15 +3064,31 @@ class XianyuLive:
             raise
 
     async def _fetch_item_detail_from_browser(self, item_id: str) -> str:
-        """使用浏览器获取商品详情"""
+        """使用浏览器获取商品详情（网络拦截方式，不依赖前端CSS类名）
+
+        页面加载时前端会请求 mtop.taobao.idle.pc.detail 接口，
+        通过 route/on('response') 拦截该响应并提取描述字段，
+        规避 CSS-modules 哈希类名（如 .desc--GaIUKUQY）随前端发版失效的问题。
+        """
+        # 冷却检查：防止拦截/选择器失效时反复启动浏览器（参照订单详情 ed289ad）
+        now = time.time()
+        last_fetch = self._item_detail_browser_cooldowns.get(item_id, 0)
+        if now - last_fetch < self._ITEM_DETAIL_BROWSER_COOLDOWN_SECONDS:
+            remaining = int(self._ITEM_DETAIL_BROWSER_COOLDOWN_SECONDS - (now - last_fetch))
+            logger.warning(f"⚠️ 商品 {item_id} 浏览器获取冷却中，还剩 {remaining} 秒，跳过")
+            return ""
+        self._item_detail_browser_cooldowns[item_id] = now
+
         playwright = None
         browser = None
+        desc_future = asyncio.get_event_loop().create_future()
         # 获取并发信号量
         await XianyuLive._playwright_semaphore.acquire()
         try:
             from playwright.async_api import async_playwright
+            from utils.item_detail_utils import extract_desc_from_detail_api
 
-            logger.info(f"开始使用浏览器获取商品详情: {item_id}")
+            logger.info(f"开始使用浏览器获取商品详情（网络拦截模式）: {item_id}")
 
             playwright = await async_playwright().start()
 
@@ -3066,33 +3164,59 @@ class XianyuLive:
             # 创建页面
             page = await context.new_page()
 
+            # 拦截页面发出的商品详情API响应，提取描述字段。
+            # 该接口被平台风控保护：未携带有效 baxia 指纹时会返回
+            # _____tmd_____/punish 滑块验证页（HTML/二进制，非 JSON），
+            # 此时应立即放弃，避免无意义的 JSON 解析异常与后续空等。
+            async def _on_detail_response(response):
+                if desc_future.done():
+                    return
+                url = response.url
+                if 'mtop.taobao.idle.pc.detail' not in url:
+                    return
+                # 风控拦截：punish 滑块验证页，直接放弃
+                if '_____tmd_____' in url or 'punish' in url:
+                    logger.info(f"商品详情接口被平台风控拦截（punish验证页），放弃拦截: {item_id}")
+                    if not desc_future.done():
+                        desc_future.set_result("")  # 空结果 = 立即结束等待
+                    return
+                try:
+                    res_json = await response.json()
+                except Exception:
+                    # 非JSON响应（punish页面/gzip等），静默放弃
+                    logger.debug(f"商品详情API响应非JSON格式，静默跳过: {item_id}")
+                    return
+                ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
+                if any('SUCCESS' in ret for ret in ret_value):
+                    desc = extract_desc_from_detail_api(res_json.get('data'))
+                    if desc and not desc_future.done():
+                        desc_future.set_result(desc)
+                        logger.info(f"拦截到商品详情API响应: {item_id}, 描述长度: {len(desc)}")
+                    return
+                # 接口返回业务失败（如RGV587风控），无需继续等待其它响应
+                if not desc_future.done():
+                    desc_future.set_result("")
+
+            page.on('response', lambda response: asyncio.ensure_future(_on_detail_response(response)))
+
             # 构造商品详情页面URL
             item_url = f"https://www.goofish.com/item?id={item_id}"
             logger.info(f"访问商品页面: {item_url}")
 
             # 访问页面
-            await page.goto(item_url, wait_until='networkidle', timeout=30000)
-
-            # 等待页面完全加载
-            await asyncio.sleep(3)
-
-            # 获取商品详情内容
-            detail_text = ""
             try:
-                # 等待目标元素出现
-                await page.wait_for_selector('.desc--GaIUKUQY', timeout=10000)
+                await page.goto(item_url, wait_until='domcontentloaded', timeout=30000)
+            except Exception as nav_e:
+                logger.warning(f"页面加载超时/失败（继续等待拦截）: {item_id}, {self._safe_str(nav_e)}")
 
-                # 获取商品详情文本
-                detail_element = await page.query_selector('.desc--GaIUKUQY')
-                if detail_element:
-                    detail_text = await detail_element.inner_text()
-                    logger.info(f"成功获取商品详情: {item_id}, 长度: {len(detail_text)}")
+            # 等待详情API响应被拦截（最多20秒；风控拦截时会立即返回空结果）
+            try:
+                detail_text = await asyncio.wait_for(asyncio.shield(desc_future), timeout=20)
+                if detail_text:
                     return detail_text.strip()
-                else:
-                    logger.warning(f"未找到商品详情元素: {item_id}")
-
-            except Exception as e:
-                logger.warning(f"获取商品详情元素失败: {item_id}, 错误: {self._safe_str(e)}")
+                return ""
+            except asyncio.TimeoutError:
+                logger.info(f"未拦截到商品详情API响应: {item_id}")
 
             return ""
 
@@ -3162,9 +3286,14 @@ class XianyuLive:
                     'card_type': item.get('card_type', 0)
                 }
 
-                # 检查数据库中是否已有详情
+                # 检查数据库中是否已有真实详情（JSON卡片dump不算，否则浏览器/API抓取永远不会重试）
+                from utils.item_detail_utils import extract_real_item_detail
                 existing_item = db_manager.get_item_info(self.cookie_id, item_id)
-                has_detail = existing_item and existing_item.get('item_detail') and existing_item['item_detail'].strip()
+                has_detail = bool(existing_item and extract_real_item_detail(existing_item.get('item_detail')))
+
+                # 手动同步商品是用户主动触发，说明想补齐详情 → 重置该商品的补抓熔断
+                if not has_detail:
+                    XianyuLive._item_detail_refetch_failures.pop(item_id, None)
 
                 batch_data.append({
                     'cookie_id': self.cookie_id,
@@ -3799,6 +3928,72 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】更新默认回复图片URL失败: {e}")
 
+    def _schedule_item_detail_refetch(self, item_id: str):
+        """派发后台任务补抓商品真实描述（不阻塞当前AI回复）
+
+        AI回复是实时链路，不能等待抓取（API+浏览器最长可超过20秒）。
+        这里以类级冷却 + 任务去重方式异步补抓：
+        - 冷却期内不重复派发，避免每次买家消息都启动一个浏览器
+        - 抓取成功后回写数据库，下次AI回复/自动发货即可使用真实描述
+
+        熔断：商品详情接口受平台风控保护，抓取失败率极高。连续失败达阈值后
+        永久停止该商品的自动补抓，避免每次对话都白白消耗一次浏览器启动，
+        改为由用户在「商品管理」手动编辑或同步商品来补齐详情。
+        """
+        if not item_id or item_id.startswith('auto_'):
+            return
+
+        now = time.time()
+
+        # 熔断检查：连续失败达阈值则不再自动补抓
+        failures = XianyuLive._item_detail_refetch_failures.get(item_id, 0)
+        if failures >= XianyuLive._ITEM_DETAIL_REFETCH_MAX_FAILURES:
+            logger.debug(
+                f"商品 {item_id} 补抓已熔断（连续失败{failures}次），"
+                f"请在商品管理中手动编辑详情或同步商品"
+            )
+            return
+
+        # 冷却检查：避免每次买家消息都派发一个抓取任务
+        last = XianyuLive._item_detail_refetch_scheduled.get(item_id, 0)
+        if now - last < XianyuLive._ITEM_DETAIL_REFETCH_COOLDOWN_SECONDS:
+            logger.debug(f"商品 {item_id} 补抓任务冷却中，跳过重复派发")
+            return
+        XianyuLive._item_detail_refetch_scheduled[item_id] = now
+
+        async def _refetch():
+            try:
+                detail = await self.fetch_item_detail_from_api(item_id)
+                if detail:
+                    detail = detail.strip()
+                    if await self.save_item_detail_only(item_id, detail):
+                        XianyuLive._item_detail_refetch_failures[item_id] = 0  # 成功则清零
+                        logger.info(f"✅ 后台补抓商品真实描述成功并已保存: {item_id}, 长度: {len(detail)}")
+                    else:
+                        self._record_refetch_failure(item_id, "保存失败")
+                else:
+                    self._record_refetch_failure(item_id, "平台风控拦截或抓取失败")
+            except Exception as e:
+                self._record_refetch_failure(item_id, self._safe_str(e))
+
+        self._create_tracked_task(_refetch())
+
+    def _record_refetch_failure(self, item_id: str, reason: str):
+        """记录一次补抓失败，达阈值则熔断该商品的自动补抓"""
+        failures = XianyuLive._item_detail_refetch_failures[item_id] + 1
+        XianyuLive._item_detail_refetch_failures[item_id] = failures
+        max_failures = XianyuLive._ITEM_DETAIL_REFETCH_MAX_FAILURES
+        if failures >= max_failures:
+            logger.warning(
+                f"商品 {item_id} 补抓连续失败{failures}/{max_failures}次（{reason}），"
+                f"已熔断自动补抓。请在商品管理中手动编辑商品详情，或手动同步商品列表。"
+            )
+        else:
+            logger.warning(
+                f"后台补抓商品描述失败（{reason}）: {item_id}，"
+                f"已失败{failures}/{max_failures}次"
+            )
+
     async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str, image_urls: list = None):
         """获取AI回复"""
         try:
@@ -3827,10 +4022,19 @@ class XianyuLive:
                 }
             else:
                 # 解析数据库中的商品信息
+                # item_detail 可能是商品列表卡片的JSON dump（非真实描述），需过滤
+                from utils.item_detail_utils import extract_real_item_detail
+                real_desc = extract_real_item_detail(item_info_raw.get('item_detail'))
+                if not real_desc:
+                    # 无真实描述：派后台任务补抓（不阻塞本次AI回复，避免 20+ 秒延迟），
+                    # 下次消息时即可用上真实描述
+                    self._schedule_item_detail_refetch(item_id)
+                    logger.info(f"数据库中商品 {item_id} 无真实描述（JSON卡片dump或为空），已派发后台补抓任务")
+
                 item_info = {
                     'title': item_info_raw.get('item_title', '未知商品'),
                     'price': self._parse_price(item_info_raw.get('item_price', '0')),
-                    'desc': item_info_raw.get('item_detail', '暂无商品描述'),
+                    'desc': real_desc if real_desc else '暂无商品描述',
                     'knowledge_base': knowledge_base
                 }
             
@@ -5203,9 +5407,11 @@ class XianyuLive:
                     if db_item_info:
                         # 拼接商品标题和详情作为搜索文本
                         item_title_db = db_item_info.get('item_title', '') or ''
-                        item_detail_db = db_item_info.get('item_detail', '') or ''
+                        # 过滤JSON卡片dump（非真实描述，会污染搜索文本）
+                        from utils.item_detail_utils import extract_real_item_detail
+                        item_detail_db = extract_real_item_detail(db_item_info.get('item_detail')) or ''
 
-                        # 如果数据库中没有详情，尝试自动获取
+                        # 如果数据库中没有真实详情，尝试自动获取
                         if not item_detail_db.strip():
                             from config import config
                             auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})

@@ -775,6 +775,13 @@ keywords_*.xlsx
 *.onnx
 checkpoints/**
 
+# AI agent相关文件
+.agents/
+.claude/
+docs/
+videos/
+
+
 # 性能分析文件
 *.perf
 *.trace
